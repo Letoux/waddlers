@@ -27,7 +27,12 @@ export default defineConfig({
       },
       {
         // Next route handlers imported directly (node env, no server needed).
-        resolve: { alias: { 'server-only': serverOnlyStub } },
+        resolve: {
+          alias: {
+            'server-only': serverOnlyStub,
+            '@': path.resolve(import.meta.dirname, 'apps/web'),
+          },
+        },
         test: {
           name: 'web',
           include: ['apps/web/**/*.test.ts'],

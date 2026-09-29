@@ -1,8 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation } from '@tanstack/react-query';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import { toast } from 'react-toastify';
@@ -27,6 +26,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { changePasswordFailure } from '@/lib/auth/errors';
 import { orpc } from '@/lib/orpc';
+import { frenchIssueMessage } from '@/lib/zod-fr';
 
 // The password rules come from the contract; only the confirmation field is UI-specific.
 const formSchema = changePasswordInputSchema
@@ -40,12 +40,10 @@ type FormValues = ChangePasswordInput & { confirmPassword: string };
 const EMPTY: FormValues = { currentPassword: '', newPassword: '', confirmPassword: '' };
 
 export function ChangePasswordForm() {
-  const router = useRouter();
-  const queryClient = useQueryClient();
   const [formError, setFormError] = useState<string | null>(null);
 
   const form = useForm<FormValues>({
-    resolver: zodResolver(formSchema),
+    resolver: zodResolver(formSchema, { error: frenchIssueMessage }),
     defaultValues: EMPTY,
   });
 
@@ -57,12 +55,6 @@ export function ChangePasswordForm() {
       },
       onError: (error) => {
         const failure = changePasswordFailure(error);
-        if (failure.sessionExpired) {
-          queryClient.clear();
-          router.replace('/login');
-          router.refresh();
-          return;
-        }
         if (failure.target === 'currentPassword') {
           form.setError('currentPassword', { type: 'server', message: failure.message });
           form.setFocus('currentPassword');

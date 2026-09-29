@@ -40,6 +40,32 @@ export default tseslint.config(
     },
   },
   {
+    // Server data in apps/web goes through getServerClient() (authed oRPC procedures), never the
+    // database directly: app/api and server/** may import @waddlers/server but not the raw DB.
+    files: ['apps/web/app/api/**/*.{ts,tsx}', 'apps/web/server/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@waddlers/server',
+              importNames: ['getDb', 'closeDb'],
+              message:
+                'apps/web must not access the database directly. Use getServerClient() from @/server/orpc (authed procedures).',
+            },
+          ],
+          patterns: [
+            {
+              group: ['@waddlers/server/*', 'drizzle-orm', 'drizzle-orm/*', 'postgres'],
+              message: 'apps/web must not access the database directly (see FRONTEND.md).',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // packages/contracts and packages/domain are browser-safe: never depend on server code.
     files: ['packages/contracts/**/*.ts', 'packages/domain/**/*.ts'],
     rules: {

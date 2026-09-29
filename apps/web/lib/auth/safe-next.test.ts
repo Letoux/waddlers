@@ -27,6 +27,27 @@ describe('safeNextPath', () => {
     expect(safeNextPath(v)).toBe('/');
   });
 
+  it.each([
+    '/..//evil.example',
+    '/%2e%2e//evil.example',
+    '/%2E%2E//evil.example',
+    '/a/../..//evil.example',
+    '/./\\evil.example',
+    '/a/../login',
+    '/LOGIN',
+    '/Login?x=1',
+    '/%6cogin',
+  ])('rejects dot-segment / login payload %j', (v) => {
+    const out = safeNextPath(v);
+    expect(out.startsWith('//')).toBe(false);
+    expect(out.toLowerCase().startsWith('/login')).toBe(false);
+  });
+
+  it('returns the normalised path, query and hash', () => {
+    expect(safeNextPath('/a/./b/../c?x=1#h')).toBe('/a/c?x=1#h');
+    expect(safeNextPath('/settings?tab=a&b=2')).toBe('/settings?tab=a&b=2');
+  });
+
   it('uses the first value of a repeated parameter', () => {
     expect(safeNextPath(['/settings', '//evil'])).toBe('/settings');
     expect(safeNextPath(['//evil', '/settings'])).toBe('/');

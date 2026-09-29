@@ -20,6 +20,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { loginFailure } from '@/lib/auth/errors';
 import { orpc } from '@/lib/orpc';
+import { frenchIssueMessage } from '@/lib/zod-fr';
 
 /** `next` is already validated server-side (safeNextPath); it is a same-origin path. */
 export function LoginForm({ next }: { next: string }) {
@@ -28,7 +29,7 @@ export function LoginForm({ next }: { next: string }) {
   const [formError, setFormError] = useState<string | null>(null);
 
   const form = useForm<LoginInput>({
-    resolver: zodResolver(loginInputSchema),
+    resolver: zodResolver(loginInputSchema, { error: frenchIssueMessage }),
     defaultValues: { username: '', password: '' },
   });
 

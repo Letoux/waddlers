@@ -1,10 +1,12 @@
 import type { Metadata } from 'next';
 import { ChangePasswordForm } from '@/components/auth/change-password-form';
+import { requireUser } from '@/server/auth';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 export const metadata: Metadata = { title: 'Paramètres · Waddlers' };
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  await requireUser();
   return (
     <div className="grid gap-6">
       <h1 className="text-2xl font-semibold tracking-tight">Paramètres</h1>

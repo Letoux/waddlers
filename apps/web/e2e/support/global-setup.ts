@@ -1,8 +1,9 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { E2E_DATABASE_URL } from './env';
+import { assertSafeDatabase } from '../../test-support/safe-database';
+import { ACCOUNT_KEYS, E2E_DATABASE_URL } from './env';
 
 // Playwright runs from apps/web; walk up to the workspace root (where the pnpm scripts live).
 function findRepoRoot(): string {
@@ -14,46 +15,51 @@ function findRepoRoot(): string {
   }
   return dir;
 }
-const repoRoot = findRepoRoot();
 
-function run(args: string[], input?: string) {
-  execFileSync('pnpm', args, {
-    cwd: repoRoot,
-    input,
-    stdio: [input === undefined ? 'ignore' : 'pipe', 'inherit', 'inherit'],
-    env: {
-      ...process.env,
-      // Both URLs point at the throwaway test database; the root .env (dev data) never wins.
-      DATABASE_URL: E2E_DATABASE_URL,
-      DATABASE_MIGRATE_URL: E2E_DATABASE_URL,
-    },
+function run(cwd: string, args: string[], input?: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      'pnpm',
+      args,
+      {
+        cwd,
+        env: {
+          ...process.env,
+          // Both URLs point at the throwaway test database; the root .env (dev data) never wins.
+          DATABASE_URL: E2E_DATABASE_URL,
+          DATABASE_MIGRATE_URL: E2E_DATABASE_URL,
+        },
+      },
+      (error, _stdout, stderr) => {
+        if (error) reject(new Error(`pnpm ${args.slice(0, 3).join(' ')} failed: ${stderr}`));
+        else resolve();
+      },
+    );
+    child.stdin?.end(input ?? '');
   });
 }
 
 /**
- * Migrates the throwaway test database and creates fresh users for this run (so a password
- * change in one run can never break the next). Passwords are random and only live in this
- * process tree's environment.
+ * Migrates the throwaway test database and creates one fresh user per scenario for this run.
+ * Passwords are random and only live in this process tree's environment (E2E_ACCOUNTS).
  */
-export default function globalSetup() {
-  const dbName = new URL(E2E_DATABASE_URL).pathname.replace(/^\//, '');
-  if (!/test/i.test(dbName)) {
-    throw new Error(
-      `Refusing to run E2E setup against database "${dbName}" (name must contain "test").`,
-    );
-  }
-
-  run(['db:migrate']);
+export default async function globalSetup() {
+  assertSafeDatabase(E2E_DATABASE_URL, !!process.env['CI']);
+  const root = findRepoRoot();
+  await run(root, ['db:migrate']);
 
   const suffix = randomBytes(4).toString('hex');
-  for (const [key, prefix] of [
-    ['E2E_USER', 'e2e-main'],
-    ['E2E_PW_USER', 'e2e-pw'],
-  ] as const) {
-    const username = `${prefix}-${suffix}`;
-    const password = `pw-${randomBytes(12).toString('hex')}`;
-    run(['admin', '--', 'user:create', username], `${password}\n`);
-    process.env[`${key}_NAME`] = username;
-    process.env[`${key}_PASSWORD`] = password;
+  const accounts: Record<string, { username: string; password: string }> = {};
+  for (const key of ACCOUNT_KEYS) {
+    accounts[key] = {
+      username: `e2e-${key}-${suffix}`.slice(0, 64),
+      password: `pw-${randomBytes(12).toString('hex')}`,
+    };
   }
+  await Promise.all(
+    Object.values(accounts).map(({ username, password }) =>
+      run(root, ['admin', '--', 'user:create', username], `${password}\n`),
+    ),
+  );
+  process.env['E2E_ACCOUNTS'] = JSON.stringify(accounts);
 }

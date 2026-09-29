@@ -6,6 +6,7 @@ async function loadRoute() {
   vi.resetModules();
   vi.stubEnv('APP_ORIGIN', ORIGIN);
   vi.stubEnv('MARKET_DATA_PROVIDER', 'fake');
+  vi.stubEnv('AUTH_SECRET', 'test-only-secret-at-least-32-bytes-long!!');
   // Unreachable DB: liveness (health) must not depend on it; nothing may hang or leak.
   vi.stubEnv('DATABASE_URL', 'postgres://nobody:pw@127.0.0.1:1/none');
   return import('./route');
@@ -52,8 +53,9 @@ describe('/api/rpc route', () => {
     const res = await POST(post('health', { 'x-csrf-token': 'orpc', origin: ORIGIN }));
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('no-store');
-    const { json } = (await res.json()) as { json: { status: string } };
-    expect(['ok', 'degraded']).toContain(json.status);
+    const { json } = (await res.json()) as { json: unknown };
+    // Liveness only: exactly status + time, no dependency state.
+    expect(json).toEqual({ status: 'ok', time: expect.any(String) });
   });
 
   it('returns 404 for an unknown procedure', async () => {

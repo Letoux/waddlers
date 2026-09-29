@@ -1,13 +1,30 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
-import '@/lib/zod-fr';
+import { loginUrlFor } from '@/lib/auth/safe-next';
+import { shouldRedirectToLogin } from '@/lib/auth/unauthorized';
 
 function makeQueryClient() {
-  return new QueryClient({
+  // Session expired or revoked while the page was open: drop cached data and go to /login,
+  // remembering where the user was. Hard navigation on purpose (fresh RSC + empty client state).
+  const onUnauthorized = (error: unknown, key?: readonly unknown[]) => {
+    const { pathname, search } = window.location;
+    if (!shouldRedirectToLogin(error, { pathname, key })) return;
+    client.clear();
+    window.location.assign(loginUrlFor(pathname + search));
+  };
+
+  const client: QueryClient = new QueryClient({
+    queryCache: new QueryCache({
+      onError: (error, query) => onUnauthorized(error, query.queryKey),
+    }),
+    mutationCache: new MutationCache({
+      onError: (error, _variables, _context, mutation) =>
+        onUnauthorized(error, mutation.options.mutationKey),
+    }),
     defaultOptions: {
       queries: {
         staleTime: 60_000,
@@ -15,6 +32,7 @@ function makeQueryClient() {
       },
     },
   });
+  return client;
 }
 
 export function Providers({ children }: { children: ReactNode }) {

@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { Slot } from '@radix-ui/react-slot';
+import { Slot } from 'radix-ui';
 import {
   Controller,
   FormProvider,
@@ -35,7 +35,11 @@ const FormField = <
   </FormFieldContext.Provider>
 );
 
-type FormItemContextValue = { id: string };
+type FormItemContextValue = {
+  id: string;
+  hasDescription: boolean;
+  setHasDescription: (value: boolean) => void;
+};
 const FormItemContext = React.createContext<FormItemContextValue>({} as FormItemContextValue);
 
 const useFormField = () => {
@@ -49,9 +53,10 @@ const useFormField = () => {
     throw new Error('useFormField should be used within <FormField>');
   }
 
-  const { id } = itemContext;
+  const { id, hasDescription } = itemContext;
   return {
     id,
+    hasDescription,
     name: fieldContext.name,
     formItemId: `${id}-form-item`,
     formDescriptionId: `${id}-form-item-description`,
@@ -62,8 +67,9 @@ const useFormField = () => {
 
 function FormItem({ className, ...props }: React.ComponentProps<'div'>) {
   const id = React.useId();
+  const [hasDescription, setHasDescription] = React.useState(false);
   return (
-    <FormItemContext.Provider value={{ id }}>
+    <FormItemContext.Provider value={{ id, hasDescription, setHasDescription }}>
       <div data-slot="form-item" className={cn('grid gap-2', className)} {...props} />
     </FormItemContext.Provider>
   );
@@ -83,13 +89,17 @@ function FormLabel({ className, ...props }: React.ComponentProps<typeof Label>) 
 }
 
 /** Wires `id`, `aria-invalid` and `aria-describedby` onto the control (hint + error). */
-function FormControl({ ...props }: React.ComponentProps<typeof Slot>) {
-  const { error, formItemId, formDescriptionId, formMessageId } = useFormField();
+function FormControl({ ...props }: React.ComponentProps<typeof Slot.Root>) {
+  const { error, hasDescription, formItemId, formDescriptionId, formMessageId } = useFormField();
+  // Only reference ids that exist in the DOM.
+  const describedBy = [hasDescription && formDescriptionId, error && formMessageId]
+    .filter(Boolean)
+    .join(' ');
   return (
-    <Slot
+    <Slot.Root
       data-slot="form-control"
       id={formItemId}
-      aria-describedby={error ? `${formDescriptionId} ${formMessageId}` : formDescriptionId}
+      aria-describedby={describedBy || undefined}
       aria-invalid={!!error}
       {...props}
     />
@@ -98,6 +108,11 @@ function FormControl({ ...props }: React.ComponentProps<typeof Slot>) {
 
 function FormDescription({ className, ...props }: React.ComponentProps<'p'>) {
   const { formDescriptionId } = useFormField();
+  const { setHasDescription } = React.useContext(FormItemContext);
+  React.useLayoutEffect(() => {
+    setHasDescription(true);
+    return () => setHasDescription(false);
+  }, [setHasDescription]);
   return (
     <p
       data-slot="form-description"
@@ -111,13 +126,13 @@ function FormDescription({ className, ...props }: React.ComponentProps<'p'>) {
 function FormMessage({ className, children, ...props }: React.ComponentProps<'p'>) {
   const { error, formMessageId } = useFormField();
   const body = error ? String(error.message ?? '') : children;
-  if (!body) return null;
+  // Always rendered: a live region must exist before its content changes to be announced.
   return (
     <p
       data-slot="form-message"
       id={formMessageId}
-      role="alert"
-      className={cn('text-destructive text-sm', className)}
+      aria-live="polite"
+      className={cn('text-destructive text-sm empty:hidden', className)}
       {...props}
     >
       {body}

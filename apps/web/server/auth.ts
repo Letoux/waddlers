@@ -1,7 +1,10 @@
 import 'server-only';
 import { ORPCError } from '@orpc/client';
 import type { CurrentUser } from '@waddlers/contracts';
+import { headers } from 'next/headers';
+import { redirect } from 'next/navigation';
 import { cache } from 'react';
+import { loginUrlFor } from '@/lib/auth/safe-next';
 import { getServerClient } from './orpc';
 
 /**
@@ -22,4 +25,15 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
     if (error instanceof ORPCError && error.code === 'UNAUTHORIZED') return null;
     throw error;
   }
+});
+
+/**
+ * Page-level route guard. Every page under `app/(app)/` MUST call this: a layout is not an
+ * auth boundary (client-side RSC navigations can render a page without re-running the layout).
+ * Redirects to `/login?next=<requested path>` when there is no session; memoised per request.
+ */
+export const requireUser = cache(async (): Promise<CurrentUser> => {
+  const user = await getCurrentUser();
+  if (!user) redirect(loginUrlFor((await headers()).get('x-waddlers-path')));
+  return user;
 });
