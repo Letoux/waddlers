@@ -33,3 +33,12 @@ export function decimalToString(value: Decimal | null | undefined): string | nul
   if (value === null || value === undefined) return null;
   return value.toFixed();
 }
+
+/**
+ * Re-wraps any decimal.js instance (possibly from a clone with different
+ * precision/rounding) into the domain Decimal so foreign settings never leak
+ * into our arithmetic. Digits are copied exactly, not re-rounded.
+ */
+export function asDecimal(value: DecimalBase): Decimal {
+  return new Decimal(value);
+}

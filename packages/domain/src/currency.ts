@@ -68,3 +68,11 @@ export function moneyFromStrings(input: SerializedMoney): Money {
 export function moneyToStrings(money: Money): SerializedMoney {
   return { amount: decimalToString(money.amount), currency: money.currency };
 }
+
+/** Reference (target) currencies must be valid major currencies; throws RangeError otherwise. */
+export function assertReferenceCurrency(code: string): CurrencyCode {
+  const n = normalizeCurrency(code);
+  if (!n || n.isMinorUnit)
+    throw new RangeError(`Invalid reference currency: ${JSON.stringify(code)}`);
+  return code;
+}

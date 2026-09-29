@@ -70,3 +70,26 @@ describe('computeMovers (specs §14)', () => {
     expect(items).toEqual(snapshot);
   });
 });
+
+describe('computeMovers input hardening', () => {
+  it('excludes NaN and Infinity performances', () => {
+    const r = computeMovers([
+      m('n', 'N', 'NaN'),
+      m('i', 'I', 'Infinity'),
+      m('x', 'X', '-Infinity'),
+      m('a', 'A', '1'),
+    ]);
+    expect(ids(r.gainers)).toEqual(['a']);
+    expect(r.losers).toEqual([]);
+  });
+
+  it('supports limit 0 and rejects invalid limits', () => {
+    expect(computeMovers([m('a', 'A', '1'), m('b', 'B', '-1')], 0)).toEqual({
+      gainers: [],
+      losers: [],
+    });
+    for (const bad of [-1, 1.5, Number.NaN]) {
+      expect(() => computeMovers([], bad)).toThrow(RangeError);
+    }
+  });
+});

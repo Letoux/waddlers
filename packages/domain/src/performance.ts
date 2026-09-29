@@ -1,4 +1,4 @@
-import { Decimal } from './decimal';
+import { Decimal, asDecimal } from './decimal';
 import { targetBaseDate, type Period } from './period';
 import { assertPlainDate, compareDates, diffDays, type PlainDate } from './plain-date';
 
@@ -30,11 +30,21 @@ export type UnavailableReason =
   | 'end_missing'
   | 'end_invalid'
   | 'history_completeness_unknown'
+  | 'history_gap_at_start'
   | 'insufficient_history';
 
 export type BaseLookup =
   | { ok: true; date: PlainDate; close: Decimal }
   | { ok: false; reason: UnavailableReason; date: PlainDate | null };
+
+/** Tolerance must be a non-negative integer number of calendar days. */
+export function resolveTolerance(toleranceDays: number | undefined): number {
+  const t = toleranceDays ?? DEFAULT_TOLERANCE_DAYS;
+  if (!Number.isInteger(t) || t < 0) {
+    throw new RangeError('toleranceDays must be a non-negative integer');
+  }
+  return t;
+}
 
 /** Valid points only, ascending by date; duplicate dates: the last occurrence in input wins. */
 export function cleanSeries(series: readonly PricePoint[]): { date: PlainDate; close: Decimal }[] {
@@ -45,7 +55,7 @@ export function cleanSeries(series: readonly PricePoint[]): { date: PlainDate; c
       byDate.delete(p.date); // a later null overrides an earlier value for the same date
       continue;
     }
-    byDate.set(p.date, p.close);
+    byDate.set(p.date, asDecimal(p.close));
   }
   return [...byDate.entries()]
     .map(([date, close]) => ({ date, close }))
@@ -58,7 +68,7 @@ export function closeOnOrBefore(
   date: PlainDate,
   options: BaseLookupOptions = {},
 ): { date: PlainDate; close: Decimal } | null {
-  const tolerance = options.toleranceDays ?? DEFAULT_TOLERANCE_DAYS;
+  const tolerance = resolveTolerance(options.toleranceDays);
   let found: { date: PlainDate; close: Decimal } | null = null;
   for (const p of cleanSeries(series)) {
     if (compareDates(p.date, date) > 0) break;
@@ -79,7 +89,7 @@ export function findBasePrice(
   options: BaseLookupOptions = {},
 ): BaseLookup {
   assertPlainDate(target);
-  const tolerance = options.toleranceDays ?? DEFAULT_TOLERANCE_DAYS;
+  const tolerance = resolveTolerance(options.toleranceDays);
   const cleaned = cleanSeries(series);
   const first = cleaned[0];
   if (first === undefined) return { ok: false, reason: 'empty_series', date: null };
@@ -108,7 +118,11 @@ export interface PerformanceInput {
   period: Period;
   /** Exchange-local as-of date the period is measured back from. */
   asOf: PlainDate;
-  /** Final price (same currency/adjustment basis as the series). `null` = missing. */
+  /**
+   * Final price (same currency/adjustment basis as the series). `null` = missing.
+   * NOTE: currency is NOT part of this input. The series, `end` and (in valuation) the price
+   * must be in the same local currency; that pairing is the caller's responsibility (see DOMAIN.md).
+   */
   end: Decimal | null;
   /**
    * D14: earliest date from which the stored history is known to be complete
@@ -120,10 +134,12 @@ export interface PerformanceInput {
 
 /** Performance % = (end / base − 1) × 100, exact Decimal. Unavailable => `value: null` + reason. */
 export function computePerformance(input: PerformanceInput): PerformanceResult {
-  const { series, period, asOf, end } = input;
+  const { series, period, asOf } = input;
   assertPlainDate(asOf);
-  if (end === null || !end.isFinite())
+  const tolerance = resolveTolerance(input.toleranceDays);
+  if (input.end === null || !input.end.isFinite())
     return { value: null, baseDate: null, reason: 'end_missing' };
+  const end = asDecimal(input.end);
   // A zero/negative last price is a data artifact, not a market value.
   if (!end.gt(0)) return { value: null, baseDate: null, reason: 'end_invalid' };
 
@@ -134,11 +150,19 @@ export function computePerformance(input: PerformanceInput): PerformanceResult {
       return { value: null, baseDate: null, reason: 'history_completeness_unknown' };
     }
     assertPlainDate(completeFrom);
+    if (compareDates(completeFrom, asOf) > 0) {
+      return { value: null, baseDate: null, reason: 'history_starts_after_target' };
+    }
     // Base = first datapoint on/after the completeness boundary and not after as-of.
     const first = cleanSeries(series).find(
       (p) => compareDates(p.date, completeFrom) >= 0 && compareDates(p.date, asOf) <= 0,
     );
     if (first === undefined) return { value: null, baseDate: null, reason: 'empty_series' };
+    if (diffDays(completeFrom, first.date) > tolerance) {
+      // The stored history claims to be complete from `completeFrom` but the first
+      // point is later: the real start of the history is unknown.
+      return { value: null, baseDate: first.date, reason: 'history_gap_at_start' };
+    }
     if (compareDates(first.date, asOf) >= 0) {
       // Single datapoint at as-of: no elapsed time, a 0 % "performance" would be fabricated.
       return { value: null, baseDate: first.date, reason: 'insufficient_history' };
@@ -148,11 +172,7 @@ export function computePerformance(input: PerformanceInput): PerformanceResult {
       : { ok: false, reason: 'non_positive_base', date: first.date };
   } else {
     const target = targetBaseDate(period, asOf) as PlainDate;
-    base = findBasePrice(
-      series,
-      target,
-      input.toleranceDays === undefined ? {} : { toleranceDays: input.toleranceDays },
-    );
+    base = findBasePrice(series, target, { toleranceDays: tolerance });
   }
 
   if (!base.ok) return { value: null, baseDate: base.date, reason: base.reason };

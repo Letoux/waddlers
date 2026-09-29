@@ -1,8 +1,9 @@
 export { isAvailable } from './availability';
-export { Decimal, parseDecimal, decimalToString } from './decimal';
+export { Decimal, parseDecimal, decimalToString, asDecimal } from './decimal';
 export {
   normalizeCurrency,
   normalizeMoney,
+  assertReferenceCurrency,
   moneyFromStrings,
   moneyToStrings,
   type CurrencyCode,
@@ -25,6 +26,7 @@ export { PERIODS, isPeriod, targetBaseDate, type Period } from './period';
 export {
   DEFAULT_TOLERANCE_DAYS,
   cleanSeries,
+  resolveTolerance,
   closeOnOrBefore,
   findBasePrice,
   computePerformance,
@@ -38,6 +40,7 @@ export {
 export {
   convert,
   convertAmount,
+  eurPerUnit,
   type FxRates,
   type ConversionResult,
   type FxUnavailableReason,

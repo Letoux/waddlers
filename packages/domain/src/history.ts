@@ -1,7 +1,7 @@
-import type { CurrencyCode } from './currency';
-import { Decimal } from './decimal';
-import { convertAmount, type FxRates } from './fx';
-import { DEFAULT_TOLERANCE_DAYS, cleanSeries, type PricePoint } from './performance';
+import { assertReferenceCurrency, type CurrencyCode } from './currency';
+import { Decimal, asDecimal } from './decimal';
+import { convertAmount } from './fx';
+import { cleanSeries, resolveTolerance, type PricePoint } from './performance';
 import { assertPlainDate, compareDates, diffDays, type PlainDate } from './plain-date';
 
 export const MAX_SERIES_POINTS = 400;
@@ -29,9 +29,9 @@ export interface SeriesPoint {
   date: PlainDate;
   /** Reference-currency value; `null` when any counted position is missing that day. */
   value: Decimal | null;
-  /** Ids of counted positions that could not be valued that day. Empty when `value` is set. */
+  /** Ids of counted positions that could not be valued that day (close or FX missing, invalid quantity). Empty when `value` is set. */
   missing: string[];
-  /** % change vs the headline start value; `null` when value or start is unavailable. */
+  /** % change vs the headline start value; `null` when the value, the headline or its start (<= 0) is unavailable. */
   evolutionPct: Decimal | null;
 }
 
@@ -49,8 +49,10 @@ export interface ValueSeries {
   points: SeriesPoint[];
   /** Derived from the same (full-resolution) series as `points`. `null` if < 2 complete points. */
   headline: Headline | null;
-  /** Number of points before downsampling. */
+  /** Number of points (after trimming, before downsampling). */
   totalPoints: number;
+  /** Counted positions whose quantity is invalid (negative/NaN/Infinity): every day is null. */
+  invalidPositions: { positionId: string; reason: 'quantity_invalid' }[];
 }
 
 export interface ValueSeriesInput {
@@ -106,46 +108,74 @@ export function downsample<T>(points: readonly T[], max: number = MAX_SERIES_POI
 }
 
 /**
- * Historical value of the CURRENT positions (D6): Σ current quantity × close(d) × fx(d).
+ * Historical value of the CURRENT positions (D6, D20): Σ current quantity × close(d) × fx(d).
  * This is NOT a real return history (no buys/sells); the UI must label it
- * "valeur des positions actuelles".
+ * "valeur des positions actuelles depuis le <headline.fromDate>".
  *
- * - Timeline: every date in [from, to] on which at least one counted position has a real close.
- * - Closes and FX are forward-filled within `toleranceDays`; beyond that the position is missing.
- * - A day where any counted position is missing gets `value: null` (never a partial sum
- *   that would look like a drop, never 0).
- * - Headline = first vs last complete point of the full series; downsampling happens after.
+ * - Timeline: `from` itself (valued by carrying closes forward, exactly like the base price
+ *   of `computePerformance`: close on or before the target within tolerance, never looking
+ *   forward) plus every later date in (from, to] with a real close for a counted position.
+ *   Points after `to` are ignored. `from > to` throws RangeError.
+ * - Closes and FX are forward-filled within `toleranceDays`. A close <= 0 is treated as
+ *   missing (it can be carried over from an earlier valid close, never becomes a 0 value).
+ * - A day where any counted position is missing (no close/FX, invalid quantity) has
+ *   `value: null` and lists the ids: never a partial sum, never 0 (D20: no data is shown
+ *   before a recent listing exists).
+ * - Leading and trailing null points are trimmed: the series starts and ends on a complete
+ *   point, so the chart endpoints equal the headline endpoints. Nulls in the middle stay (gaps).
+ * - Headline = first vs last point of the trimmed series (`fromDate` may be later than `from`).
+ *   Downsampling happens after and keeps first and last.
  */
 export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
   const { positions, fx, from, to } = input;
   assertPlainDate(from);
   assertPlainDate(to);
-  const reference = input.referenceCurrency ?? 'EUR';
-  const tolerance = input.toleranceDays ?? DEFAULT_TOLERANCE_DAYS;
+  if (compareDates(from, to) > 0) throw new RangeError('from must not be after to');
+  const reference = assertReferenceCurrency(input.referenceCurrency ?? 'EUR');
+  const tolerance = resolveTolerance(input.toleranceDays);
   const maxPoints = input.maxPoints ?? MAX_SERIES_POINTS;
 
+  const invalidPositions: ValueSeries['invalidPositions'] = [];
   const counted = positions
-    .filter((p): p is HistoryPosition & { quantity: Decimal } => p.quantity !== null)
-    .map((p) => ({
-      id: p.id,
-      quantity: p.quantity,
-      currency: p.currency,
-      closes: cleanSeries(p.closes).map((c) => ({ date: c.date, v: c.close })),
-    }));
+    .filter((p) => p.quantity !== null)
+    .map((p) => {
+      const quantity = asDecimal(p.quantity as Decimal);
+      const valid = quantity.isFinite() && !quantity.isNegative();
+      if (!valid) invalidPositions.push({ positionId: p.id, reason: 'quantity_invalid' });
+      return {
+        id: p.id,
+        quantity,
+        valid,
+        currency: p.currency,
+        closes: cleanSeries(p.closes)
+          .filter((c) => c.close.gt(0))
+          .map((c) => ({ date: c.date, v: c.close })),
+      };
+    });
 
+  // FX: same duplicate rule as closes (last occurrence wins; an invalid last value drops the date).
   const fxSeries = new Map<CurrencyCode, Dated<Decimal>[]>();
   for (const [currency, points] of fx) {
-    const cleaned = new Map<PlainDate, Decimal>();
-    for (const pt of points) if (pt.rate.gt(0)) cleaned.set(pt.date, pt.rate);
+    const byDate = new Map<PlainDate, Decimal>();
+    for (const pt of points) {
+      assertPlainDate(pt.date);
+      const rate = asDecimal(pt.rate);
+      if (!rate.isFinite() || !rate.gt(0)) byDate.delete(pt.date);
+      else byDate.set(pt.date, rate);
+    }
     fxSeries.set(
       currency,
-      [...cleaned.entries()]
+      [...byDate.entries()]
         .map(([date, v]) => ({ date, v }))
         .sort((a, b) => compareDates(a.date, b.date)),
     );
   }
 
-  const dates = new Set<PlainDate>();
+  if (counted.length === 0) {
+    return { points: [], headline: null, totalPoints: 0, invalidPositions };
+  }
+
+  const dates = new Set<PlainDate>([from]);
   for (const p of counted) {
     for (const c of p.closes) {
       if (compareDates(c.date, from) >= 0 && compareDates(c.date, to) <= 0) dates.add(c.date);
@@ -162,44 +192,47 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
     const missing: string[] = [];
     let value = new Decimal(0);
     for (const p of counted) {
+      if (!p.valid) {
+        missing.push(p.id);
+        continue;
+      }
       const close = latest(p.closes, date, tolerance);
-      const converted =
-        close === null ? null : convertAmount(close, p.currency, reference, rates as FxRates);
+      const converted = close === null ? null : convertAmount(close, p.currency, reference, rates);
       if (converted === null || !converted.ok) {
         missing.push(p.id);
         continue;
       }
       value = value.plus(p.quantity.times(converted.amount));
     }
-    return {
-      date,
-      value: missing.length === 0 ? value : null,
-      missing,
-      evolutionPct: null,
-    };
+    return { date, value: missing.length === 0 ? value : null, missing, evolutionPct: null };
   });
 
-  const complete = full.filter((p): p is SeriesPoint & { value: Decimal } => p.value !== null);
-  const first = complete[0];
-  const last = complete[complete.length - 1];
-  let headline: Headline | null = null;
-  if (first !== undefined && last !== undefined && first.date !== last.date) {
-    headline = {
-      fromDate: first.date,
-      toDate: last.date,
-      startValue: first.value,
-      endValue: last.value,
-      change: last.value.minus(first.value),
-      changePct: first.value.gt(0) ? last.value.div(first.value).minus(1).times(100) : null,
-    };
-  }
+  const firstIdx = full.findIndex((p) => p.value !== null);
+  if (firstIdx < 0) return { points: [], headline: null, totalPoints: 0, invalidPositions };
+  let lastIdx = full.length - 1;
+  while (full[lastIdx]?.value === null) lastIdx -= 1;
+  const trimmed = full.slice(firstIdx, lastIdx + 1);
 
-  const start = first !== undefined && first.value.gt(0) ? first.value : null;
-  const points = downsample(full, maxPoints).map((p) => ({
+  const first = trimmed[0] as SeriesPoint & { value: Decimal };
+  const last = trimmed[trimmed.length - 1] as SeriesPoint & { value: Decimal };
+  const headline: Headline | null =
+    first.date === last.date
+      ? null
+      : {
+          fromDate: first.date,
+          toDate: last.date,
+          startValue: first.value,
+          endValue: last.value,
+          change: last.value.minus(first.value),
+          changePct: first.value.gt(0) ? last.value.div(first.value).minus(1).times(100) : null,
+        };
+
+  const start = headline !== null && headline.startValue.gt(0) ? headline.startValue : null;
+  const points = downsample(trimmed, maxPoints).map((p) => ({
     ...p,
     evolutionPct:
       p.value !== null && start !== null ? p.value.div(start).minus(1).times(100) : null,
   }));
 
-  return { points, headline, totalPoints: full.length };
+  return { points, headline, totalPoints: trimmed.length, invalidPositions };
 }

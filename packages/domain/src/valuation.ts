@@ -1,5 +1,5 @@
-import type { Money, CurrencyCode } from './currency';
-import { Decimal } from './decimal';
+import { assertReferenceCurrency, type Money, type CurrencyCode } from './currency';
+import { Decimal, asDecimal } from './decimal';
 import { convertAmount, type FxRates } from './fx';
 
 export interface ValuationPosition {
@@ -48,6 +48,7 @@ export function computeSpaceValue(
   rates: FxRates,
   referenceCurrency: CurrencyCode = 'EUR',
 ): SpaceValue {
+  assertReferenceCurrency(referenceCurrency);
   const rows: PositionValue[] = [];
   const missing: SpaceValue['missing'] = [];
   let total: Decimal | null = null;
@@ -58,7 +59,8 @@ export function computeSpaceValue(
   };
 
   for (const position of positions) {
-    const { id, quantity, price } = position;
+    const { id, price } = position;
+    const quantity = position.quantity === null ? null : asDecimal(position.quantity);
     if (quantity === null) {
       rows.push({ positionId: id, value: null, excluded: true });
       continue;
@@ -75,7 +77,12 @@ export function computeSpaceValue(
       fail(id, 'price_invalid');
       continue;
     }
-    const converted = convertAmount(price.amount, price.currency, referenceCurrency, rates);
+    const converted = convertAmount(
+      asDecimal(price.amount),
+      price.currency,
+      referenceCurrency,
+      rates,
+    );
     if (!converted.ok) {
       fail(id, converted.reason === 'currency_invalid' ? 'currency_invalid' : 'fx_missing');
       continue;

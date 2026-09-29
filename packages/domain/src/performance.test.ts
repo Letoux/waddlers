@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { Decimal as DecimalBase } from 'decimal.js';
 import { Decimal } from './decimal';
 import {
   cleanSeries,
@@ -173,7 +174,11 @@ describe('computePerformance', () => {
       baseDate: null,
       reason: 'end_missing',
     });
-    expect(computePerformance({ series, period: '1w', asOf, end: D('0') }).value).toBeNull();
+    expect(computePerformance({ series, period: '1w', asOf, end: D('0') })).toEqual({
+      value: null,
+      baseDate: null,
+      reason: 'end_invalid',
+    });
     expect(computePerformance({ series, period: '1w', asOf, end: D('-1') })).toMatchObject({
       reason: 'end_invalid',
     });
@@ -240,7 +245,7 @@ describe('computePerformance', () => {
         period: 'max',
         asOf,
         end: D('180'),
-        historyCompleteFrom: '2025-12-01',
+        historyCompleteFrom: '2025-12-10',
       });
       expect(r.baseDate).toBe('2025-12-17');
       expect(r.value?.toFixed()).toBe('125');
@@ -262,7 +267,7 @@ describe('computePerformance', () => {
           period: 'max',
           asOf,
           end: D('5'),
-          historyCompleteFrom: '2026-01-01',
+          historyCompleteFrom: '2026-06-15',
         }),
       ).toEqual({ value: null, baseDate: '2026-06-18', reason: 'insufficient_history' });
     });
@@ -270,13 +275,96 @@ describe('computePerformance', () => {
     it('is unavailable when no datapoint exists after the boundary', () => {
       expect(
         computePerformance({
+          series: [pt('2026-01-01', '1')],
+          period: 'max',
+          asOf,
+          end: D('1'),
+          historyCompleteFrom: '2026-06-01',
+        }),
+      ).toMatchObject({ value: null, reason: 'empty_series' });
+    });
+
+    it('reports history_gap_at_start when the first point is beyond tolerance after the boundary', () => {
+      const base = { series, period: 'max' as const, asOf, end: D('150') };
+      // first point >= 2025-12-01 is 2025-12-17 (16 days later)
+      expect(computePerformance({ ...base, historyCompleteFrom: '2025-12-01' })).toEqual({
+        value: null,
+        baseDate: '2025-12-17',
+        reason: 'history_gap_at_start',
+      });
+      // exactly at the tolerance boundary is accepted, one day more is not
+      expect(
+        computePerformance({ ...base, historyCompleteFrom: '2025-12-07' }).value,
+      ).not.toBeNull();
+      expect(computePerformance({ ...base, historyCompleteFrom: '2025-12-06' })).toMatchObject({
+        reason: 'history_gap_at_start',
+      });
+      expect(
+        computePerformance({ ...base, historyCompleteFrom: '2025-12-01', toleranceDays: 16 }).value,
+      ).not.toBeNull();
+    });
+
+    it('is unavailable when historyCompleteFrom is after as-of', () => {
+      expect(
+        computePerformance({
           series,
           period: 'max',
           asOf,
           end: D('1'),
-          historyCompleteFrom: '2027-01-01',
+          historyCompleteFrom: '2026-06-19',
         }),
-      ).toMatchObject({ value: null, reason: 'empty_series' });
+      ).toEqual({ value: null, baseDate: null, reason: 'history_starts_after_target' });
+    });
+
+    it('ignores datapoints after as-of', () => {
+      const r = computePerformance({
+        series: [pt('2026-06-19', '1')],
+        period: 'max',
+        asOf,
+        end: D('1'),
+        historyCompleteFrom: '2026-06-15',
+      });
+      expect(r).toMatchObject({ value: null, reason: 'empty_series' });
+    });
+  });
+
+  describe('computePerformance hardening', () => {
+    it('5y from a leap day uses the clamped 2019-02-28 target', () => {
+      const r = computePerformance({
+        series: [pt('2019-02-27', '50'), pt('2019-02-28', '100'), pt('2019-03-01', '1')],
+        period: '5y',
+        asOf: '2024-02-29',
+        end: D('150'),
+      });
+      expect(r.baseDate).toBe('2019-02-28');
+      expect(r.value?.toFixed()).toBe('50');
+    });
+
+    it.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects tolerance %s', (t) => {
+      expect(() => findBasePrice(series, '2026-06-11', { toleranceDays: t })).toThrow(RangeError);
+      expect(() => closeOnOrBefore(series, '2026-06-11', { toleranceDays: t })).toThrow(RangeError);
+      expect(() =>
+        computePerformance({
+          series,
+          period: '1w',
+          asOf: '2026-06-18',
+          end: D('1'),
+          toleranceDays: t,
+        }),
+      ).toThrow(RangeError);
+    });
+
+    it('re-wraps foreign decimal.js instances so their precision does not leak', () => {
+      const Foreign = DecimalBase.clone({ precision: 5, rounding: DecimalBase.ROUND_DOWN });
+      const foreignSeries = [{ date: '2026-06-11', close: new Foreign('3') as unknown as Decimal }];
+      const r = computePerformance({
+        series: foreignSeries,
+        period: '1w',
+        asOf: '2026-06-18',
+        end: new Foreign('4') as unknown as Decimal,
+      });
+      // (4/3 − 1) × 100 at the domain's 40 digits, not truncated to 5
+      expect(r.value?.toFixed()).toMatch(/^33\.3{30,}$/);
     });
   });
 });

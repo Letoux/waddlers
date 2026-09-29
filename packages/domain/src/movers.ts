@@ -1,4 +1,4 @@
-import type { Decimal } from './decimal';
+import { asDecimal, type Decimal } from './decimal';
 
 export interface MoverInput {
   id: string;
@@ -38,16 +38,23 @@ export function computeMovers<T extends MoverInput>(
   items: readonly T[],
   limit: number = DEFAULT_MOVERS_LIMIT,
 ): Movers<T> {
-  const measured = items.filter(
-    (i): i is T & { performance: Decimal } => i.performance !== null && i.performance.isFinite(),
-  );
+  if (!Number.isInteger(limit) || limit < 0) {
+    throw new RangeError('limit must be a non-negative integer');
+  }
+  const measured = items
+    .filter((i) => i.performance !== null && i.performance.isFinite())
+    .map((i) => ({ item: i, performance: asDecimal(i.performance as Decimal) }));
+  const order = (a: (typeof measured)[number], b: (typeof measured)[number], dir: 1 | -1): number =>
+    dir * a.performance.cmp(b.performance) || tieBreak(a.item, b.item);
   const gainers = measured
     .filter((i) => i.performance.gt(0))
-    .sort((a, b) => b.performance.cmp(a.performance) || tieBreak(a, b))
-    .slice(0, limit);
+    .sort((a, b) => order(a, b, -1))
+    .slice(0, limit)
+    .map((i) => i.item);
   const losers = measured
     .filter((i) => i.performance.lt(0))
-    .sort((a, b) => a.performance.cmp(b.performance) || tieBreak(a, b))
-    .slice(0, limit);
+    .sort((a, b) => order(a, b, 1))
+    .slice(0, limit)
+    .map((i) => i.item);
   return { gainers, losers };
 }

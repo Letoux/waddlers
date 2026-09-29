@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Decimal } from './decimal';
-import { convert, convertAmount, type FxRates } from './fx';
+import { Decimal as DecimalBase } from 'decimal.js';
+import { convert, convertAmount, eurPerUnit, type FxRates } from './fx';
 import { computeSpaceValue, type ValuationPosition } from './valuation';
 
 const D = (s: string) => new Decimal(s);
@@ -61,9 +62,33 @@ describe('convert (EUR-based, 1 EUR = x CCY)', () => {
     expect(convert(null, 'USD', 'EUR', rates)).toBeNull();
   });
 
-  it('round-trips within decimal precision', () => {
-    const there = convert(D('100'), 'EUR', 'USD', rates) as Decimal;
-    expect(convert(there, 'USD', 'EUR', rates)?.toFixed()).toBe('100');
+  it('round-trips within decimal precision with a non-exact rate', () => {
+    const r: FxRates = new Map([['USD', D('1.17')]]);
+    const there = convert(D('100'), 'EUR', 'USD', r) as Decimal;
+    expect(there.toFixed()).toBe('117');
+    const back = convert(there, 'USD', 'EUR', r) as Decimal;
+    expect(back.toSignificantDigits(20).toFixed()).toBe('100');
+    expect(convert(D('1'), 'USD', 'GBP', r)).toBeNull(); // GBP rate missing in this table
+  });
+
+  it('displays rate direction for §34 (CCY/EUR = 1 / rate)', () => {
+    expect(eurPerUnit('USD', rates)?.toFixed()).toBe('0.8'); // 1 USD = 0.8 EUR
+    expect(eurPerUnit('EUR', rates)?.toFixed()).toBe('1');
+    expect(eurPerUnit('GBX', rates)?.toFixed()).toBe('0.0125'); // 1 GBX = 1/0.8/100 EUR
+    expect(eurPerUnit('CHF', rates)).toBeNull();
+    expect(eurPerUnit('usd', rates)).toBeNull();
+    // consistent with convert
+    expect(eurPerUnit('USD', rates)?.toFixed()).toBe(
+      convert(D('1'), 'USD', 'EUR', rates)?.toFixed(),
+    );
+  });
+
+  it('re-wraps foreign decimal instances', () => {
+    const Foreign = DecimalBase.clone({ precision: 3, rounding: DecimalBase.ROUND_DOWN });
+    const r: FxRates = new Map([['USD', new Foreign('1.25') as unknown as Decimal]]);
+    expect(convert(new Foreign('1000.123') as unknown as Decimal, 'USD', 'EUR', r)?.toFixed()).toBe(
+      '800.0984',
+    );
   });
 });
 
@@ -168,5 +193,46 @@ describe('computeSpaceValue (specs §32, D5, D9)', () => {
     const v = computeSpaceValue([pos('a', '1', '100')], rates, 'USD');
     expect(v.total?.toFixed()).toBe('125');
     expect(v.currency).toBe('USD');
+  });
+});
+
+describe('non-finite and invalid inputs', () => {
+  it('flags NaN/Infinity quantities and prices in valuation', () => {
+    const v = computeSpaceValue(
+      [
+        pos('qn', 'NaN', '10'),
+        pos('qi', 'Infinity', '10'),
+        pos('pn', '1', 'NaN'),
+        pos('pi', '1', 'Infinity'),
+      ],
+      rates,
+    );
+    expect(v.missing.map((m) => [m.positionId, m.reason])).toEqual([
+      ['qn', 'quantity_invalid'],
+      ['qi', 'quantity_invalid'],
+      ['pn', 'price_invalid'],
+      ['pi', 'price_invalid'],
+    ]);
+    expect(v.total).toBeNull();
+  });
+
+  it('rejects an invalid or minor-unit reference currency', () => {
+    expect(() => computeSpaceValue([], rates, 'GBX')).toThrow(RangeError);
+    expect(() => computeSpaceValue([], rates, 'eur')).toThrow(RangeError);
+  });
+
+  it('re-wraps foreign decimal quantities and prices', () => {
+    const Foreign = DecimalBase.clone({ precision: 3, rounding: DecimalBase.ROUND_DOWN });
+    const v = computeSpaceValue(
+      [
+        {
+          id: 'f',
+          quantity: new Foreign('1234.5678') as unknown as Decimal,
+          price: { amount: new Foreign('1.1') as unknown as Decimal, currency: 'EUR' },
+        },
+      ],
+      rates,
+    );
+    expect(v.total?.toFixed()).toBe('1358.02458');
   });
 });

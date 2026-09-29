@@ -1,5 +1,5 @@
 import { normalizeCurrency, type CurrencyCode } from './currency';
-import { Decimal } from './decimal';
+import { Decimal, asDecimal } from './decimal';
 
 /**
  * EUR-based FX rates, ECB convention (D2): `rates.get('USD') = 1.17` means
@@ -19,7 +19,7 @@ function perEur(currency: CurrencyCode, rates: FxRates): Decimal | null {
   if (currency === 'EUR') return new Decimal(1);
   const rate = rates.get(currency);
   if (rate === undefined || !rate.isFinite() || !rate.gt(0)) return null;
-  return rate;
+  return asDecimal(rate);
 }
 
 /**
@@ -39,7 +39,7 @@ export function convertAmount(
   const f = normalizeCurrency(from);
   const t = normalizeCurrency(to);
   if (!f || !t) return { ok: false, reason: 'currency_invalid' };
-  const major = amount.div(f.divisor);
+  const major = asDecimal(amount).div(f.divisor);
   if (f.currency === t.currency) return { ok: true, amount: major.times(t.divisor) };
   const rateFrom = perEur(f.currency, rates);
   const rateTo = perEur(t.currency, rates);
@@ -57,4 +57,17 @@ export function convert(
   if (amount === null) return null;
   const result = convertAmount(amount, from, to, rates);
   return result.ok ? result.amount : null;
+}
+
+/**
+ * Display helper for specs §34 ("USD/EUR : 0,85"): how many EUR one unit of `currency`
+ * is worth = 1 / rate (the stored rate is CCY per 1 EUR). Minor units are handled
+ * (GBX -> 1 / rate[GBP] / 100). EUR -> 1. Missing rate / invalid code -> null.
+ * Display only: conversions must go through `convert`, never through this rounded-looking value.
+ */
+export function eurPerUnit(currency: CurrencyCode, rates: FxRates): Decimal | null {
+  const c = normalizeCurrency(currency);
+  if (!c) return null;
+  const rate = perEur(c.currency, rates);
+  return rate === null ? null : new Decimal(1).div(rate).div(c.divisor);
 }
