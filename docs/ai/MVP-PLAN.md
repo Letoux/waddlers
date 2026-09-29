@@ -1,6 +1,6 @@
 # Waddlers — MVP implementation plan
 
-Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). Nothing implemented yet.
+Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1** (S1 decisions: `docs/ai/BACKEND.md`).
 Source of truth remains `specs.md`; this file records the agreed decomposition and design.
 
 ## 1. Objective
@@ -161,4 +161,4 @@ Non-blocking (can default and revisit):
 
 ## 8. Recommended next step
 
-`/implement` **S0** with `waddlers-backend-implementer` (Sonnet), followed by S1. S4's domain module can begin in parallel once S0 lands.
+`/implement` **S2** (auth) — reuse the oRPC context/middleware seam in `packages/server/src/rpc-handler.ts`; security review is mandatory. S4 domain module can proceed in parallel.

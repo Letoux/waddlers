@@ -34,6 +34,20 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-shot: applies committed Drizzle migrations, then exits. `web` waits for it.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrate
+    profiles: ['app']
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-waddlers}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
   web:
     build:
       context: .
@@ -49,6 +63,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   postgres-data:
