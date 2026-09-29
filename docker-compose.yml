@@ -65,7 +65,7 @@ services:
       MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-fake}
       TRUSTED_PROXY_HEADER: ${TRUSTED_PROXY_HEADER:-}
     ports:
-      - '3000:3000'
+      - '127.0.0.1:3000:3000'
     depends_on:
       postgres:
         condition: service_healthy

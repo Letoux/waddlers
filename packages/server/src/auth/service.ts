@@ -1,9 +1,12 @@
 import { ORPCError } from '@orpc/server';
 import type { CurrentUser } from '@waddlers/contracts';
-import { eq } from 'drizzle-orm';
 import type { Database } from '../db/create';
-import { users } from '../db/schema';
-import { readSessionToken, serializeClearedSessionCookie, serializeSessionCookie } from './cookie';
+import {
+  parseSessionCookie,
+  serializeClearedSessionCookie,
+  serializeSessionCookie,
+  setSessionCookieHeader,
+} from './cookie';
 import { hashPassword, needsRehash, verifyDummy, verifyPassword } from './password';
 import { LoginRateLimiter } from './rate-limit';
 import {
@@ -17,6 +20,7 @@ import {
   shouldRefreshSession,
   type ResolvedSession,
 } from './sessions';
+import { findUserById, findUserByUsername, setPasswordHash } from './users';
 
 export interface AuthDeps {
   getDb: () => Database;
@@ -32,17 +36,36 @@ export interface AuthContext {
   resHeaders?: Headers;
 }
 
+/** Typed error constructors supplied by oRPC (`errors` handler argument). */
+export interface TooManyRequestsErrors {
+  TOO_MANY_REQUESTS: (options: { data: { retryAfterSeconds: number } }) => Error;
+}
+export interface ChangePasswordErrors extends TooManyRequestsErrors {
+  INVALID_CURRENT_PASSWORD: () => Error;
+}
+
 export const INVALID_CREDENTIALS_MESSAGE = 'Identifiants invalides';
 
 function unauthorized(message = 'Unauthorized') {
   return new ORPCError('UNAUTHORIZED', { message });
 }
 
-function tooManyRequests(retryAfterMs: number) {
-  return new ORPCError('TOO_MANY_REQUESTS', {
-    message: 'Too many attempts',
-    data: { retryAfterSeconds: Math.ceil(retryAfterMs / 1000) },
-  });
+function throttled(errors: TooManyRequestsErrors, ctx: AuthContext, retryAfterMs: number): never {
+  const retryAfterSeconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+  ctx.resHeaders?.set('retry-after', String(retryAfterSeconds));
+  throw errors.TOO_MANY_REQUESTS({ data: { retryAfterSeconds } });
+}
+
+/**
+ * Procedures that set or clear the cookie need a response to carry it. Without `resHeaders`
+ * (server-side client) they must fail loudly instead of committing a session nobody receives.
+ * Checked before any side effect.
+ */
+function requireResponseHeaders(ctx: AuthContext): Headers {
+  if (!ctx.resHeaders) {
+    throw new Error('Session-mutating procedures require an HTTP response (resHeaders).');
+  }
+  return ctx.resHeaders;
 }
 
 function toCurrentUser(user: { id: string; username: string }): CurrentUser {
@@ -53,12 +76,13 @@ function toCurrentUser(user: { id: string; username: string }): CurrentUser {
  * Resolves the session behind the request's cookie. Sliding expiry is applied only when the
  * response can carry a refreshed cookie (`resHeaders` present, i.e. through the HTTP handler);
  * SSR/RSC reads never write, otherwise the DB expiry would move without the cookie following.
+ * Expired sessions never resolve, hence are never refreshed.
  */
 export async function authenticate(
   deps: AuthDeps,
   ctx: AuthContext,
 ): Promise<ResolvedSession | null> {
-  const token = readSessionToken(ctx.headers.get('cookie'));
+  const token = parseSessionCookie(ctx.headers.get('cookie')).token;
   if (!token) return null;
   const now = deps.now();
   const db = deps.getDb();
@@ -66,7 +90,7 @@ export async function authenticate(
   if (!session) return null;
   if (ctx.resHeaders && shouldRefreshSession(session, now)) {
     const expiresAt = await refreshSession(db, session.sessionId, now);
-    ctx.resHeaders.append('set-cookie', serializeSessionCookie(token));
+    setSessionCookieHeader(ctx.resHeaders, serializeSessionCookie(token));
     return { ...session, lastSeenAt: now, expiresAt };
   }
   return session;
@@ -76,46 +100,45 @@ export async function login(
   deps: AuthDeps,
   ctx: AuthContext,
   input: { username: string; password: string },
+  errors: TooManyRequestsErrors,
 ): Promise<{ user: CurrentUser }> {
-  const ip = deps.clientIp(ctx.headers);
-  const blockedMs = deps.loginLimiter.check(input.username, ip);
-  if (blockedMs > 0) throw tooManyRequests(blockedMs);
+  const resHeaders = requireResponseHeaders(ctx);
+  // Reserve the attempt synchronously (no await between check and count).
+  const reservation = deps.loginLimiter.acquire(input.username, deps.clientIp(ctx.headers));
+  if (!reservation.allowed) throttled(errors, ctx, reservation.retryAfterMs);
 
   const db = deps.getDb();
-  const [user] = await db.select().from(users).where(eq(users.username, input.username)).limit(1);
+  const user = await findUserByUsername(db, input.username);
 
   // Same work for unknown, disabled and wrong-password cases (timing), same error.
   const valid =
     user && user.disabledAt === null
       ? await verifyPassword(user.passwordHash, input.password)
       : await verifyDummy(input.password);
-  if (!user || !valid) {
-    deps.loginLimiter.recordFailure(input.username, ip);
-    throw unauthorized(INVALID_CREDENTIALS_MESSAGE);
-  }
+  if (!user || !valid) throw unauthorized(INVALID_CREDENTIALS_MESSAGE);
 
-  deps.loginLimiter.recordSuccess(input.username, ip);
+  reservation.succeed();
   const now = deps.now();
   if (needsRehash(user.passwordHash)) {
-    await db
-      .update(users)
-      .set({ passwordHash: await hashPassword(input.password), updatedAt: now })
-      .where(eq(users.id, user.id));
+    await setPasswordHash(db, user.id, await hashPassword(input.password), now);
   }
 
-  // A presented session is replaced (never reused) to prevent fixation.
-  const previous = readSessionToken(ctx.headers.get('cookie'));
-  if (previous) {
-    const old = await resolveSession(db, previous, now);
-    if (old) await revokeSession(db, old.sessionId);
-  }
-  await purgeExpiredSessions(db, user.id, now);
-  const { token } = await createSession(db, {
-    userId: user.id,
-    userAgent: ctx.headers.get('user-agent'),
-    now,
+  // A presented session is replaced (never reused) to prevent fixation. One transaction:
+  // either the user ends with the new session, or nothing changed.
+  const previous = parseSessionCookie(ctx.headers.get('cookie')).token;
+  const { token } = await db.transaction(async (tx) => {
+    if (previous) {
+      const old = await resolveSession(tx, previous, now);
+      if (old) await revokeSession(tx, old.sessionId);
+    }
+    await purgeExpiredSessions(tx, user.id, now);
+    return createSession(tx, {
+      userId: user.id,
+      userAgent: ctx.headers.get('user-agent'),
+      now,
+    });
   });
-  ctx.resHeaders?.append('set-cookie', serializeSessionCookie(token));
+  setSessionCookieHeader(resHeaders, serializeSessionCookie(token));
   return { user: toCurrentUser(user) };
 }
 
@@ -124,8 +147,9 @@ export async function logout(
   ctx: AuthContext,
   session: ResolvedSession,
 ): Promise<{ ok: true }> {
+  const resHeaders = requireResponseHeaders(ctx);
   await revokeSession(deps.getDb(), session.sessionId);
-  ctx.resHeaders?.append('set-cookie', serializeClearedSessionCookie());
+  setSessionCookieHeader(resHeaders, serializeClearedSessionCookie());
   return { ok: true };
 }
 
@@ -134,33 +158,31 @@ export async function changePassword(
   ctx: AuthContext,
   session: ResolvedSession,
   input: { currentPassword: string; newPassword: string },
+  errors: ChangePasswordErrors,
 ): Promise<{ user: CurrentUser }> {
-  const limiterKey = session.user.id;
-  const blockedMs = deps.passwordLimiter.check(limiterKey, '-');
-  if (blockedMs > 0) throw tooManyRequests(blockedMs);
+  const resHeaders = requireResponseHeaders(ctx);
+  const reservation = deps.passwordLimiter.acquire(session.user.id, '-');
+  if (!reservation.allowed) throttled(errors, ctx, reservation.retryAfterMs);
 
   const db = deps.getDb();
-  const [user] = await db.select().from(users).where(eq(users.id, session.user.id)).limit(1);
+  const user = await findUserById(db, session.user.id);
   if (!user || user.disabledAt !== null) throw unauthorized();
   if (!(await verifyPassword(user.passwordHash, input.currentPassword))) {
-    deps.passwordLimiter.recordFailure(limiterKey, '-');
-    throw new ORPCError('INVALID_CURRENT_PASSWORD', {
-      status: 400,
-      message: 'Invalid current password',
-    });
+    throw errors.INVALID_CURRENT_PASSWORD();
   }
-  deps.passwordLimiter.recordSuccess(limiterKey, '-');
+  reservation.succeed();
 
   const now = deps.now();
   const newHash = await hashPassword(input.newPassword);
-  const { token } = await db.transaction(async (tx) => {
-    await tx
-      .update(users)
-      .set({ passwordHash: newHash, updatedAt: now })
-      .where(eq(users.id, user.id));
+  const rotated = await db.transaction(async (tx) => {
+    // Rotation goes first-class in the transaction: if the session was revoked or expired
+    // meanwhile (or the user disabled), throwing rolls the password change back.
+    await setPasswordHash(tx, user.id, newHash, now);
     await revokeUserSessions(tx, user.id, session.sessionId);
-    return rotateSession(tx, session.sessionId, now);
+    const result = await rotateSession(tx, session.sessionId, now);
+    if (!result) throw unauthorized();
+    return result;
   });
-  ctx.resHeaders?.append('set-cookie', serializeSessionCookie(token));
+  setSessionCookieHeader(resHeaders, serializeSessionCookie(rotated.token));
   return { user: toCurrentUser(user) };
 }

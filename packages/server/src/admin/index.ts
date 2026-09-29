@@ -1,22 +1,16 @@
 import { usernameSchema } from '@waddlers/contracts';
-import { eq, sql } from 'drizzle-orm';
 import { checkPasswordPolicy, hashPassword } from '../auth/password';
 import { revokeUserSessions } from '../auth/sessions';
+import { findUserByUsername, insertUser, markUserDisabled, setPasswordHash } from '../auth/users';
 import type { Database } from '../db/create';
-import { sessions, users } from '../db/schema';
+import { AdminError } from './errors';
 
 export { createDatabase, type Database } from '../db/create';
+export { pgErrorCode } from '../db/errors';
+export { AdminError } from './errors';
 export { runAdminCli, USAGE, type CliIo } from './cli';
 export { readSecret } from './prompt';
 export { seedDevUser } from './seed';
-
-/** Operator-facing error: the message is safe to print (never contains secrets). */
-export class AdminError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AdminError';
-  }
-}
 
 function parseUsername(raw: string): string {
   const result = usernameSchema.safeParse(raw);
@@ -31,22 +25,17 @@ function assertPassword(password: string): void {
   if (!policy.ok) throw new AdminError(`Password rejected: ${policy.reason}`);
 }
 
-async function findUser(db: Database, username: string) {
-  const [user] = await db.select().from(users).where(eq(users.username, username)).limit(1);
-  return user;
-}
-
 export async function createUser(
   db: Database,
   input: { username: string; password: string },
 ): Promise<{ id: string; username: string }> {
   const username = parseUsername(input.username);
   assertPassword(input.password);
-  if (await findUser(db, username)) throw new AdminError('User already exists');
-  const [created] = await db
-    .insert(users)
-    .values({ username, passwordHash: await hashPassword(input.password) })
-    .returning({ id: users.id, username: users.username });
+  if (await findUserByUsername(db, username)) throw new AdminError('User already exists');
+  const created = await insertUser(db, {
+    username,
+    passwordHash: await hashPassword(input.password),
+  });
   if (!created) throw new AdminError('User creation failed');
   return created;
 }
@@ -58,15 +47,12 @@ export async function resetPassword(
 ): Promise<{ revokedSessions: number }> {
   const username = parseUsername(input.username);
   assertPassword(input.password);
-  const user = await findUser(db, username);
+  const user = await findUserByUsername(db, username);
   if (!user) throw new AdminError('User not found');
   const passwordHash = await hashPassword(input.password);
   return db.transaction(async (tx) => {
-    await tx
-      .update(users)
-      .set({ passwordHash, updatedAt: sql`now()` })
-      .where(eq(users.id, user.id));
-    return { revokedSessions: await countAndRevoke(tx, user.id) };
+    await setPasswordHash(tx, user.id, passwordHash);
+    return { revokedSessions: await revokeUserSessions(tx, user.id) };
   });
 }
 
@@ -76,27 +62,10 @@ export async function disableUser(
   input: { username: string },
 ): Promise<{ revokedSessions: number }> {
   const username = parseUsername(input.username);
-  const user = await findUser(db, username);
+  const user = await findUserByUsername(db, username);
   if (!user) throw new AdminError('User not found');
   return db.transaction(async (tx) => {
-    if (user.disabledAt === null) {
-      await tx
-        .update(users)
-        .set({ disabledAt: sql`now()`, updatedAt: sql`now()` })
-        .where(eq(users.id, user.id));
-    }
-    return { revokedSessions: await countAndRevoke(tx, user.id) };
+    await markUserDisabled(tx, user);
+    return { revokedSessions: await revokeUserSessions(tx, user.id) };
   });
-}
-
-async function countAndRevoke(
-  tx: Parameters<Parameters<Database['transaction']>[0]>[0],
-  userId: string,
-) {
-  const [row] = await tx
-    .select({ n: sql<number>`count(*)::int` })
-    .from(sessions)
-    .where(eq(sessions.userId, userId));
-  await revokeUserSessions(tx, userId);
-  return row?.n ?? 0;
 }

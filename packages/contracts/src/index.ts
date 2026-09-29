@@ -14,12 +14,12 @@ export const newPasswordSchema = z
   .min(PASSWORD_MIN_LENGTH, `Au moins ${PASSWORD_MIN_LENGTH} caractères.`)
   .max(PASSWORD_MAX_LENGTH, `Au plus ${PASSWORD_MAX_LENGTH} caractères.`);
 
-/** Username as created by the admin: 3-64 chars of [a-z0-9._-], case-insensitive (citext). */
+/** Username set by the admin: 3-64 characters among letters, digits, `.`, `_` and `-`; case-insensitive (citext). */
 export const usernameSchema = z
   .string()
   .trim()
-  .min(3)
-  .max(64)
+  .min(3, 'Au moins 3 caractères.')
+  .max(64, 'Au plus 64 caractères.')
   .regex(/^[a-zA-Z0-9._-]+$/, 'Lettres, chiffres, point, tiret et underscore uniquement.');
 
 // --- health (public, liveness only) ---
@@ -70,7 +70,15 @@ export const changePasswordInputSchema = z
   });
 export type ChangePasswordInput = z.infer<typeof changePasswordInputSchema>;
 
-const sessionOutputSchema = z.object({ user: currentUserSchema });
+export const sessionOutputSchema = z.object({ user: currentUserSchema });
+export type SessionOutput = z.infer<typeof sessionOutputSchema>;
+
+/** Typed 429 for login/changePassword; also sent as a `Retry-After` header. */
+export const tooManyRequestsError = {
+  status: 429,
+  message: 'Too many attempts',
+  data: z.object({ retryAfterSeconds: z.number().int().min(1) }),
+} as const;
 
 /**
  * Error codes the UI must handle:
@@ -83,13 +91,19 @@ export const contract = {
   health: oc.input(z.undefined()).output(healthOutputSchema),
   systemStatus: oc.input(z.undefined()).output(systemStatusOutputSchema),
   auth: {
-    login: oc.input(loginInputSchema).output(sessionOutputSchema),
+    login: oc
+      .input(loginInputSchema)
+      .output(sessionOutputSchema)
+      .errors({ TOO_MANY_REQUESTS: tooManyRequestsError }),
     logout: oc.input(z.undefined()).output(z.object({ ok: z.literal(true) })),
     me: oc.input(z.undefined()).output(sessionOutputSchema),
     changePassword: oc
       .input(changePasswordInputSchema)
       .output(sessionOutputSchema)
-      .errors({ INVALID_CURRENT_PASSWORD: { status: 400, message: 'Invalid current password' } }),
+      .errors({
+        INVALID_CURRENT_PASSWORD: { status: 400, message: 'Invalid current password' },
+        TOO_MANY_REQUESTS: tooManyRequestsError,
+      }),
   },
 };
 

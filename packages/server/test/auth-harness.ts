@@ -71,13 +71,11 @@ export function createApp(deps: RouterDeps = {}) {
     );
     if (!result.matched) throw new Error('route not matched');
     const body = (await result.response.json()) as { json?: unknown };
-    const isError = result.response.status >= 400;
     return {
       status: result.response.status,
       json: (body.json ?? {}) as RpcResult['json'],
       setCookies: result.response.headers.getSetCookie(),
       headers: result.response.headers,
-      ...(isError ? {} : {}),
     };
   }
 

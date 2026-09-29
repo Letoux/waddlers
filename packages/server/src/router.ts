@@ -3,6 +3,7 @@ import { contract } from '@waddlers/contracts';
 import { sql } from 'drizzle-orm';
 import { authenticate, changePassword, login, logout, type AuthDeps } from './auth/service';
 import type { ResolvedSession } from './auth/sessions';
+import { warmDummyHash } from './auth/password';
 import { LoginRateLimiter } from './auth/rate-limit';
 import { getDb } from './db/client';
 import { getEnv } from './env';
@@ -79,6 +80,8 @@ export function createRouter({
   authenticate: resolveAuth,
 }: RouterDeps = {}) {
   const deps: AuthDeps = { getDb: getDatabase, now, loginLimiter, passwordLimiter, clientIp };
+  // Pay the one-off argon2 dummy-hash cost now, not on the first unknown-user login (timing).
+  warmDummyHash();
   const os = implement(contract).$context<RpcContext>();
 
   /**
@@ -117,11 +120,13 @@ export function createRouter({
       };
     }),
     auth: {
-      login: os.auth.login.handler(({ context, input }) => login(deps, context, input)),
+      login: os.auth.login.handler(({ context, input, errors }) =>
+        login(deps, context, input, errors),
+      ),
       logout: authed.auth.logout.handler(({ context }) => logout(deps, context, context.session)),
       me: authed.auth.me.handler(({ context }) => ({ user: context.session.user })),
-      changePassword: authed.auth.changePassword.handler(({ context, input }) =>
-        changePassword(deps, context, context.session, input),
+      changePassword: authed.auth.changePassword.handler(({ context, input, errors }) =>
+        changePassword(deps, context, context.session, input, errors),
       ),
     },
   });

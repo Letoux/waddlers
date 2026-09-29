@@ -91,13 +91,29 @@ describe('admin CLI argument handling', () => {
 describe('dev seed', () => {
   it('refuses to run in production', async () => {
     await expect(
-      seedDevUser(noDb, { NODE_ENV: 'production', SEED_USER_PASSWORD: 'a-long-enough-password' }),
+      seedDevUser(noDb, {
+        NODE_ENV: 'production',
+        APP_ORIGIN: 'http://localhost:3000',
+        SEED_USER_PASSWORD: 'a-long-enough-password',
+      }),
     ).rejects.toThrow(/production/);
   });
 
   it('requires SEED_USER_PASSWORD', async () => {
-    await expect(seedDevUser(noDb, { NODE_ENV: 'development' })).rejects.toThrow(
-      /SEED_USER_PASSWORD/,
-    );
+    await expect(
+      seedDevUser(noDb, { NODE_ENV: 'development', APP_ORIGIN: 'http://localhost:3000' }),
+    ).rejects.toThrow(/SEED_USER_PASSWORD/);
+  });
+
+  it('refuses when APP_ORIGIN is not localhost, unless ALLOW_DEV_SEED=1', async () => {
+    const env = { NODE_ENV: 'development', SEED_USER_PASSWORD: 'a-long-enough-password' };
+    await expect(
+      seedDevUser(noDb, { ...env, APP_ORIGIN: 'https://staging.example.com' }),
+    ).rejects.toThrow(/APP_ORIGIN/);
+    await expect(seedDevUser(noDb, env)).rejects.toThrow(/APP_ORIGIN/);
+    // With the override the guard passes and the (unreachable here) database is touched.
+    await expect(
+      seedDevUser(noDb, { ...env, APP_ORIGIN: 'https://staging.example.com', ALLOW_DEV_SEED: '1' }),
+    ).rejects.toThrow(/db touched/);
   });
 });

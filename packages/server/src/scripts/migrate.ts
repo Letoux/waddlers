@@ -2,6 +2,7 @@
 // (DATABASE_MIGRATE_URL, falling back to DATABASE_URL for simple local setups).
 // The root .env is loaded by the package script (node --env-file-if-exists); process env wins.
 import { runMigrations } from '../db/migrate';
+import { pgErrorCode } from '../db/errors';
 
 const url = process.env.DATABASE_MIGRATE_URL || process.env.DATABASE_URL;
 if (!url) {
@@ -14,7 +15,12 @@ try {
   console.log('Migrations applied.');
 } catch (error) {
   // Print the error name/code only: driver messages can embed connection details.
-  const code = (error as { code?: string } | null)?.code;
+  const code = pgErrorCode(error);
   console.error(`Migration failed${code ? ` (${code})` : ''}.`);
+  if (code === '42501') {
+    console.error(
+      'Permission denied: migrations need the database OWNER. Set DATABASE_MIGRATE_URL to the owner connection (not the DML-only app role).',
+    );
+  }
   process.exit(1);
 }

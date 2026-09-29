@@ -10,7 +10,7 @@ import {
   resetAuthTables,
   useTestEnv,
 } from '../../test/auth-harness';
-import { hashPassword, verifyPassword } from '../auth/password';
+import { verifyPassword } from '../auth/password';
 import { runAdminCli, type CliIo } from './cli';
 import { AdminError, createUser, disableUser, resetPassword } from './index';
 import { readSecret } from './prompt';
@@ -143,6 +143,7 @@ describe('dev seed', () => {
   it('creates the dev user once and does not reset an existing password', async () => {
     const env = {
       NODE_ENV: 'development',
+      APP_ORIGIN: 'http://localhost:3000',
       SEED_USER_PASSWORD: PASSWORD,
       SEED_USER_USERNAME: 'devuser',
     };
@@ -157,6 +158,5 @@ describe('dev seed', () => {
     const [after] = await getDb().select().from(users);
     expect(after?.passwordHash).toBe(before?.passwordHash);
     expect(await verifyPassword(after!.passwordHash, PASSWORD)).toBe(true);
-    void hashPassword;
   });
 });

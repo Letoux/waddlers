@@ -1,5 +1,5 @@
-import { and, eq, isNull, lt, ne, gt } from 'drizzle-orm';
-import type { Database } from '../db/create';
+import { and, eq, exists, gt, isNull, lt, ne, sql } from 'drizzle-orm';
+import type { DbExecutor } from '../db/create';
 import { sessions, users } from '../db/schema';
 import { SESSION_TTL_MS } from './cookie';
 import { generateSessionToken, hashSessionToken } from './token';
@@ -20,7 +20,7 @@ export interface ResolvedSession {
   expiresAt: Date;
 }
 
-type Executor = Pick<Database, 'select' | 'insert' | 'update' | 'delete'>;
+type Executor = DbExecutor;
 
 export async function createSession(
   db: Executor,
@@ -88,19 +88,21 @@ export async function revokeSession(db: Executor, sessionId: string): Promise<vo
   await db.delete(sessions).where(eq(sessions.id, sessionId));
 }
 
-/** Revokes every session of a user, optionally keeping one. */
+/** Revokes every session of a user, optionally keeping one. Returns rows actually deleted. */
 export async function revokeUserSessions(
   db: Executor,
   userId: string,
   exceptSessionId?: string,
-): Promise<void> {
-  await db
+): Promise<number> {
+  const deleted = await db
     .delete(sessions)
     .where(
       exceptSessionId
         ? and(eq(sessions.userId, userId), ne(sessions.id, exceptSessionId))
         : eq(sessions.userId, userId),
-    );
+    )
+    .returning({ id: sessions.id });
+  return deleted.length;
 }
 
 /** Housekeeping: drops a user's expired sessions (called on login). */
@@ -108,17 +110,33 @@ export async function purgeExpiredSessions(db: Executor, userId: string, now: Da
   await db.delete(sessions).where(and(eq(sessions.userId, userId), lt(sessions.expiresAt, now)));
 }
 
-/** Issues a fresh token for an existing session (same row, new secret, full sliding window). */
+/**
+ * Issues a fresh token for an existing session (same row, new secret, full sliding window).
+ * Returns null when the session no longer qualifies (revoked, expired, or user disabled): the
+ * caller must abort instead of resurrecting it.
+ */
 export async function rotateSession(
   db: Executor,
   sessionId: string,
   now: Date,
-): Promise<{ token: string; expiresAt: Date }> {
+): Promise<{ token: string; expiresAt: Date } | null> {
   const token = generateSessionToken();
   const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
-  await db
+  const rows = await db
     .update(sessions)
     .set({ tokenHash: hashSessionToken(token), lastSeenAt: now, expiresAt })
-    .where(eq(sessions.id, sessionId));
-  return { token, expiresAt };
+    .where(
+      and(
+        eq(sessions.id, sessionId),
+        gt(sessions.expiresAt, now),
+        exists(
+          db
+            .select({ one: sql`1` })
+            .from(users)
+            .where(and(eq(users.id, sessions.userId), isNull(users.disabledAt))),
+        ),
+      ),
+    )
+    .returning({ id: sessions.id });
+  return rows.length === 0 ? null : { token, expiresAt };
 }

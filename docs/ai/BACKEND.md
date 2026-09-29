@@ -64,11 +64,18 @@ D15 defaults applied, revisitable: identifier = **username** (3-64 chars `[A-Za-
 
 ### Rate limiting
 
-`auth/rate-limit.ts`, in memory: login allows 5 failures per (username, IP) and 20 per username across IPs per 15 minutes, then answers `TOO_MANY_REQUESTS` (429, `data.retryAfterSeconds`) even for the right password; success clears the pair counter; blocked attempts do not extend the window. `changePassword` has its own budget per user (wrong current password, stolen session guessing). **Limitation:** per process and reset on restart (single instance, D13); multi-instance needs a shared store. The client IP is `unknown` unless `TRUSTED_PROXY_HEADER` is set (forwarded headers are spoofable otherwise); with `x-forwarded-for` the right-most entry is used. The per-username cap means an attacker can lock a known username out for 15 minutes (accepted trade-off for a handful of users).
+`auth/rate-limit.ts`, in memory, single instance (D13: per process, reset on restart; multi-instance needs a shared store). Attempts are **reserved synchronously** right after the limit check (no `await` in between) and refunded when the attempt succeeds, so concurrent requests cannot all slip under the budget (tested with 40 parallel logins: exactly 5 reach password verification, the rest get 429). A blocked request is not counted and does not extend the window.
+
+- **Known client IP** (`TRUSTED_PROXY_HEADER` set; with `x-forwarded-for` the right-most entry is used): 5 attempts per (username, IP) and 20 per username across IPs per 15 minutes, then a hard block (`TOO_MANY_REQUESTS`, 429) even for the right password. The per-username cap still holds if a spoofed header rotates the IP.
+- **Unknown client IP** (`TRUSTED_PROXY_HEADER` unset, the default): every client looks the same, so a pair limit would let anonymous failures lock a user out for everyone. Only a per-username **progressive delay** applies: 5 free attempts, then a wait of 2 s doubling up to 60 s (resets after a success or 15 idle minutes). A victim is therefore delayed by at most 60 s, and an attacker is capped at about one guess per minute per username.
+- `changePassword` has its own budget per user (wrong current password; stolen-session guessing), same mechanics.
+- Throttled responses are the typed error `TOO_MANY_REQUESTS` with `data: { retryAfterSeconds }` plus a `Retry-After` header.
+- Limiter memory is bounded (soft cap on keys); only non-blocking keys are ever evicted.
 
 ### oRPC layout
 
 - Context: `{ headers: Headers; resHeaders?: Headers }` (`RpcContext`). `ResponseHeadersPlugin` turns `resHeaders` into response headers (`Set-Cookie`).
+- Procedures that set or clear the cookie (`login`, `logout`, `changePassword`) throw when called without `resHeaders` (the server-side client): a session must never be committed without a response to carry the cookie. A response carries at most one session `Set-Cookie` (the last write wins, e.g. a sliding refresh followed by logout sends only the clearing cookie). Login's session writes (revoke previous, purge expired, insert) are one transaction; `changePassword` rotates the current session inside its transaction and aborts (rolling the new password back) if that session no longer qualifies (revoked, expired, user disabled).
 - `authed` middleware (in `router.ts`) resolves the session from the `cookie` header and adds `context.session`. It runs before input validation. **Every non-public procedure must be built from `authed`.** `PUBLIC_PROCEDURES` in `@waddlers/contracts` (`health`, `auth.login`) is the explicit allowlist; `auth/guard.test.ts` enumerates the contract and asserts every other procedure answers `UNAUTHORIZED` to anonymous calls (with no database access).
 - `health` is **public and liveness-only** (`{ status: 'ok', time }`): no dependency state is exposed to anonymous callers, and it needs no rate limit or log line. The database probe moved to authenticated `systemStatus` (its "database unavailable" log line is throttled to one per 30 s).
 - Login-related errors: `UNAUTHORIZED` (401), `TOO_MANY_REQUESTS` (429), `INVALID_CURRENT_PASSWORD` (400, typed in the contract), `BAD_REQUEST` (validation). Do not render `message`/`issues` raw.
@@ -89,8 +96,8 @@ D15 defaults applied, revisitable: identifier = **username** (3-64 chars `[A-Za-
 ### Database roles (least privilege)
 
 - **Owner** (`POSTGRES_USER`, `DATABASE_MIGRATE_URL`): runs migrations and `pnpm db:setup-roles`. Only the `migrate` service and CI use it.
-- **App role** `waddlers_app` (`DATABASE_URL`, password `APP_DB_PASSWORD`): `SELECT/INSERT/UPDATE/DELETE` on `public` tables and sequence usage; no DDL, no `TRUNCATE`, no access to the `drizzle` migration schema, not superuser. `ALTER DEFAULT PRIVILEGES` gives it DML on tables created by future migrations, so nothing needs re-granting. Used by web, the admin CLI and the seed. `db:setup-roles` is idempotent and also rotates the password; run it before `db:migrate` (Compose does). Passwords must be URL-safe (`openssl rand -hex 24`), enforced by the script, because they are embedded in URLs. Integration tests (`db/roles.int.test.ts`) prove the role cannot run DDL.
-- Local dev stays simple: `.env.example` documents both URLs; `pnpm db:migrate` falls back to `DATABASE_URL` if `DATABASE_MIGRATE_URL` is unset (single-role setups). The Compose `web` service only receives `DATABASE_URL` (app role), `APP_ORIGIN`, `MARKET_DATA_PROVIDER`, `TRUSTED_PROXY_HEADER`, never the root `.env`. The `migrate` stage runs as non-root `node`.
+- **App role** `waddlers_app` (`DATABASE_URL`, password `APP_DB_PASSWORD`): `SELECT/INSERT/UPDATE/DELETE` on `public` tables and sequence usage; no DDL, no `TRUNCATE`, no access to the `drizzle` migration schema, not superuser. `ALTER DEFAULT PRIVILEGES` gives it DML on tables created by future migrations, so nothing needs re-granting. Used by web, the admin CLI and the seed. `db:setup-roles` is idempotent and also rotates the password; run it before `db:migrate` (Compose does). Passwords must be URL-safe (`openssl rand -hex 24`), enforced by the script, because they are embedded in URLs. `setup-roles` sends the password with `ALTER/CREATE ROLE ... PASSWORD '<literal>'`, which PostgreSQL may write to the server log if `log_statement` is `ddl`/`all`: **keep statement logging off** (the default) on the database, or rotate the password afterwards. `db:migrate` prints a hint to use `DATABASE_MIGRATE_URL` (owner) on SQLSTATE 42501. Integration tests (`db/roles.int.test.ts`) prove the role cannot run DDL.
+- Non-Docker `next dev` loads the root `.env` from `apps/web/next.config.ts` (Next only reads `apps/web/.env`); Docker/CI rely on the process environment. Local dev stays simple: `.env.example` documents both URLs; `pnpm db:migrate` falls back to `DATABASE_URL` if `DATABASE_MIGRATE_URL` is unset (single-role setups). The Compose `web` service only receives `DATABASE_URL` (app role), `APP_ORIGIN`, `MARKET_DATA_PROVIDER`, `TRUSTED_PROXY_HEADER`, never the root `.env`. The `migrate` stage runs as non-root `node`.
 
 ### HTTP security headers (`apps/web/next.config.ts`, tested in `next.config.test.ts`)
 
@@ -107,7 +114,7 @@ pnpm admin -- user:disable alice           # disables, revokes all sessions (ide
 printf '%s\n' "$PASSWORD" | pnpm admin -- user:create alice   # non-interactive: first stdin line
 ```
 
-The password is read only from the hidden prompt or stdin, never argv (extra arguments, including `--password`, are refused) and never from the environment. Uses `DATABASE_URL` (app role). `pnpm db:seed` creates `SEED_USER_USERNAME` (default `dev`) with `SEED_USER_PASSWORD` if absent (existing users are untouched), and exits non-zero when `NODE_ENV=production`. Spaces (`space:create`, `space:grant`) arrive in S3.
+The password is read only from the hidden prompt or stdin, never argv (extra arguments, including `--password`, are refused) and never from the environment. Uses `DATABASE_URL` (app role). `pnpm db:seed` creates `SEED_USER_USERNAME` (default `dev`) with `SEED_USER_PASSWORD` if absent (existing users are untouched), and exits non-zero when `NODE_ENV=production`, or when `APP_ORIGIN` is not localhost unless `ALLOW_DEV_SEED=1`. Spaces (`space:create`, `space:grant`) arrive in S3.
 
 ### What the frontend should call
 
@@ -118,3 +125,7 @@ The password is read only from the hidden prompt or stdin, never argv (extra arg
 ### Integration tests
 
 `packages/server/test/auth-harness.ts` drives the real RPC handler with a browser-like request (CSRF header, Origin, Sec-Fetch-Site). Suites: `auth/auth.int.test.ts`, `admin/admin.int.test.ts`, `db/roles.int.test.ts`, `health.int.test.ts`. Unit tests (`pnpm test`, no database): password/token/cookie/rate-limit, guard enumeration, CSRF/body-limit/CORS in `rpc-handler.test.ts`, CLI argument handling, env rules.
+
+### Code layout notes
+
+`auth/users.ts` is the users repository (used by the auth service and the admin module); `AdminError` lives in `admin/errors.ts` (no import cycle between `admin/index.ts` and `admin/cli.ts`/`seed.ts`). Node >= 22.9 is required (`--env-file-if-exists`).

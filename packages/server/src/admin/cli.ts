@@ -1,5 +1,7 @@
 import type { Writable } from 'node:stream';
-import { AdminError, createUser, disableUser, resetPassword } from './index';
+import { pgErrorCode } from '../db/errors';
+import { AdminError } from './errors';
+import { createUser, disableUser, resetPassword } from './index';
 import type { Database } from '../db/create';
 
 export const USAGE = `Usage: pnpm admin -- <command> <username>
@@ -57,7 +59,7 @@ export async function runAdminCli(argv: string[], db: Database, io: CliIo): Prom
     }
   } catch (error) {
     if (error instanceof AdminError) return fail(error.message);
-    const code = (error as { code?: string } | null)?.code;
+    const code = pgErrorCode(error);
     return fail(`Command failed${code ? ` (${code})` : ''}.`);
   }
 }

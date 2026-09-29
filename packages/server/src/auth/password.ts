@@ -54,12 +54,22 @@ export function needsRehash(passwordHash: string): boolean {
 
 let dummyHash: Promise<string> | undefined;
 
+function getDummyHash(): Promise<string> {
+  return (dummyHash ??= hashPassword('waddlers-dummy-password-for-timing'));
+}
+
+/** Starts computing the dummy hash in the background (errors surface on first real use). */
+export function warmDummyHash(): void {
+  getDummyHash().catch(() => {
+    dummyHash = undefined;
+  });
+}
+
 /**
  * Verifies against a throwaway hash (same parameters) so unknown/disabled accounts cost the
  * same as a wrong password. Always returns false.
  */
 export async function verifyDummy(password: string): Promise<false> {
-  dummyHash ??= hashPassword('waddlers-dummy-password-for-timing');
-  await verifyPassword(await dummyHash, password);
+  await verifyPassword(await getDummyHash(), password);
   return false;
 }

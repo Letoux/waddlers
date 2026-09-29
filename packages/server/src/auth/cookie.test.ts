@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   hasSessionCookie,
+  parseSessionCookie,
+  setSessionCookieHeader,
   readSessionToken,
   serializeClearedSessionCookie,
   serializeSessionCookie,
@@ -44,5 +46,27 @@ describe('session cookie', () => {
     expect(readSessionToken(null)).toBeUndefined();
     expect(hasSessionCookie(`${SESSION_COOKIE_NAME}=garbage`)).toBe(true);
     expect(hasSessionCookie('theme=dark')).toBe(false);
+  });
+
+  it('parses once: present covers malformed values, token only well-formed ones', () => {
+    expect(parseSessionCookie(`${SESSION_COOKIE_NAME}=garbage`)).toEqual({ present: true });
+    expect(parseSessionCookie(`${SESSION_COOKIE_NAME}=${'a'.repeat(43)}`)).toEqual({
+      present: true,
+      token: 'a'.repeat(43),
+    });
+    expect(parseSessionCookie('theme=dark')).toEqual({ present: false });
+  });
+
+  it('keeps a single session Set-Cookie per response (last write wins), other cookies stay', () => {
+    const headers = new Headers();
+    headers.append('set-cookie', 'theme=dark; Path=/');
+    setSessionCookieHeader(headers, serializeSessionCookie('first'));
+    setSessionCookieHeader(headers, serializeClearedSessionCookie());
+    const cookies = headers.getSetCookie();
+    expect(cookies).toHaveLength(2);
+    expect(cookies).toContain('theme=dark; Path=/');
+    expect(cookies.filter((c) => c.startsWith(SESSION_COOKIE_NAME))).toEqual([
+      serializeClearedSessionCookie(),
+    ]);
   });
 });
