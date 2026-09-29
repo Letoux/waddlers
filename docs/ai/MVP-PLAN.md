@@ -1,6 +1,6 @@
 # Waddlers — MVP implementation plan
 
-Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1** (S1 decisions: `docs/ai/BACKEND.md`).
+Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1, S2, S4 domain module** (decisions: `docs/ai/BACKEND.md`, `docs/ai/FRONTEND.md`, `docs/ai/DOMAIN.md`; reviews: `docs/ai/REVIEW-S1.md`, `docs/ai/REVIEW-S2.md`).
 Source of truth remains `specs.md`; this file records the agreed decomposition and design.
 
 ## 1. Objective
@@ -147,6 +147,7 @@ Decided by the user on 2026-09-29:
 | D9 | Null quantity | Allowed; watchlist entry excluded from value, included in table/movers |
 | D10 | Shared spaces | M:N membership with roles (default); table config per user+space |
 | D11 | Adding instruments | Server-side provider-backed search (rate-limited) + add form; admin CLI fallback. S3 fills positions via dev seed/admin CLI; the add form ships right after S4 (needs the search endpoint), on the fake provider until the EODHD adapter lands. |
+| D20 | Missing history for recent listings | Decided 2026-09-29: "on ne ment pas sur la donnée". A history day where any counted position lacks a close or FX has no value (never a partial sum); leading/trailing empty days are trimmed so the chart starts at the first complete day, whose actual close date is shown ("depuis le …"); mid-series gaps stay visible. Details: `docs/ai/DOMAIN.md`. |
 
 Non-blocking (can default and revisit):
 
@@ -161,4 +162,4 @@ Non-blocking (can default and revisit):
 
 ## 8. Recommended next step
 
-`/implement` **S2** (auth) — reuse the oRPC context/middleware seam in `packages/server/src/rpc-handler.ts`; security review is mandatory. S4 domain module can proceed in parallel.
+`/implement` **S3** (spaces & positions) — every page calls `requireUser()` and reads data only through authed oRPC procedures (`docs/ai/FRONTEND.md`); IDOR security review is mandatory. Then the S4 persistence/service part (needs S3 schema). Carry-overs for S5: surface `invalidPositions` and `leadingMissing` from the history series (`docs/ai/DOMAIN.md`).
