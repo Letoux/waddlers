@@ -48,6 +48,24 @@ jobs:
     name: Build and E2E
     runs-on: ubuntu-latest
     needs: quality
+    # Throwaway database for the E2E run. Playwright's global setup migrates it and creates
+    # fresh users (apps/web/e2e/support/global-setup.ts); it refuses a database name without "test".
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: waddlers
+          POSTGRES_PASSWORD: waddlers-test
+          POSTGRES_DB: waddlers_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U waddlers -d waddlers_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      E2E_DATABASE_URL: postgres://waddlers:waddlers-test@localhost:5433/waddlers_test
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
