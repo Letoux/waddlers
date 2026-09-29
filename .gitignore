@@ -1,19 +1,23 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
-/node_modules
-/.pnp
+# dependencies (any workspace dir)
+node_modules/
+.pnp
 .pnp.js
+.pnpm-store/
 
 # testing
-/coverage
+coverage/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
 
 # next.js
-/.next/
-/out/
+.next/
+out/
 
 # production
-/build
+build/
+dist/
 
 # misc
 .DS_Store
@@ -24,9 +28,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# local env files
-.env*.local
-.env
+# env files (only .env.example is committed)
+.env*
+!.env.example
 
 # vercel
 .vercel

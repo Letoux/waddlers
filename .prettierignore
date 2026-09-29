@@ -1,0 +1,13 @@
+node_modules
+.next
+pnpm-lock.yaml
+coverage
+test-results
+playwright-report
+docs
+specs.md
+CLAUDE.md
+AGENTS.md
+README_AI.md
+.claude
+scripts
