@@ -2,6 +2,7 @@ import { implement } from '@orpc/server';
 import { contract } from '@waddlers/contracts';
 import { sql } from 'drizzle-orm';
 import { getDb } from './db/client';
+import { logError, type ErrorLogger } from './errors';
 
 const os = implement(contract);
 
@@ -19,7 +20,10 @@ async function withTimeout(check: DbCheck): Promise<void> {
     await Promise.race([
       check(),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('db check timeout')), DB_CHECK_TIMEOUT_MS);
+        timer = setTimeout(
+          () => reject(Object.assign(new Error('db check timeout'), { name: 'DbCheckTimeout' })),
+          DB_CHECK_TIMEOUT_MS,
+        );
       }),
     ]);
   } finally {
@@ -30,9 +34,15 @@ async function withTimeout(check: DbCheck): Promise<void> {
 export interface RouterDeps {
   checkDb?: DbCheck;
   now?: () => Date;
+  /** Server-side error logger (sanitised by default). Injectable for tests. */
+  log?: ErrorLogger;
 }
 
-export function createRouter({ checkDb = checkDatabase, now = () => new Date() }: RouterDeps = {}) {
+export function createRouter({
+  checkDb = checkDatabase,
+  now = () => new Date(),
+  log = logError,
+}: RouterDeps = {}) {
   return os.router({
     health: os.health.handler(async () => {
       let db: 'ok' | 'unavailable' = 'ok';
@@ -40,10 +50,7 @@ export function createRouter({ checkDb = checkDatabase, now = () => new Date() }
         await withTimeout(checkDb);
       } catch (error) {
         // Detail stays in the server log; the response only says "unavailable".
-        console.error(
-          'Health check: database unavailable',
-          error instanceof Error ? error.name : 'unknown',
-        );
+        log('Health check: database unavailable', error);
         db = 'unavailable';
       }
       return {

@@ -22,8 +22,16 @@ Server env is validated with Zod in `packages/server/src/env.ts`, parsed lazily 
 
 Contract-first: schemas and the contract live in `packages/contracts` (browser-safe). Implementations live in `packages/server/src/router.ts` (`implement(contract)`); mounted at `apps/web/app/api/rpc/[[...rest]]/route.ts`. The typed client and TanStack Query helpers are in `apps/web/lib/orpc.ts`.
 
-Security groundwork: every request needs the `x-csrf-token` header (oRPC simple CSRF plugin, added by the client link), browser requests with a foreign `Origin` are rejected (403), and GET on RPC procedures is refused unless a procedure opts in. Mutations must be POST. Session cookies and authn/z arrive in S2.
+Security groundwork: the route exports **POST only** (add GET only when a procedure opts into it; Next adds an implicit HEAD when GET is exported, so `createRpcHandler` also answers 405 for any method other than POST/GET, and oRPC's `StrictGetMethodPlugin`, on by default, refuses GET on procedures). Every request needs the `x-csrf-token` header (oRPC simple CSRF plugin, added by the client link). `allowedOrigin` is a **required** `createRpcHandler` option (APP_ORIGIN): a request with a foreign `Origin` gets 403 (missing Origin is allowed; the CSRF header still applies). The custom 403/405 bodies are oRPC-encoded (`{ json: <ORPCError json> }`) so RPCLink decodes them as typed `ORPCError`s (covered by an in-process client test). Every RPC response, including 403/404/405, carries `Cache-Control: no-store`. Session cookies and authn/z arrive in S2.
 
 ## Error-mapping policy (specs section 36)
 
 Technical errors are never exposed. `packages/server/src/errors.ts` wraps every procedure call: an `ORPCError` passes through unchanged (procedures throw these deliberately: `NOT_FOUND`, `UNAUTHORIZED`, ...); any other error is logged server-side and replaced by `INTERNAL_SERVER_ERROR` with the neutral message `Internal server error` (no stack, SQL, driver text, no `cause`). The UI maps error codes to user-facing French messages. Dependency failures in `health` are reported as `db: 'unavailable'` (HTTP 200, `status: 'degraded'`) with no detail.
+
+## Logging policy
+
+All server error logs go through `describeError()` (`errors.ts`): error `name`, SQLSTATE/system `code`, `constraint_name`, `severity`, Drizzle `query` (placeholders only) and the stack frames, walking `cause` at most two levels. It never logs `message` (Drizzle embeds params in it), `params` or Postgres `detail` (row values). `ORPCError`s with status >= 500 (e.g. output validation) are logged and passed through unchanged. Loggers are injectable (`log` in `createRpcHandler` / `RouterDeps`) so tests need no console spies.
+
+## Route tests
+
+`apps/web/**/*.test.ts` run in the vitest project `web` (part of `pnpm test`): the Next route module is imported directly with stubbed env (unreachable DB) to assert Origin, method exports and 404 behaviour.

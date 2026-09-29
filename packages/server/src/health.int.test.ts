@@ -1,10 +1,10 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { closeDb } from './db/client';
 import { resetEnvCache } from './env';
 import { createRpcHandler } from './rpc-handler';
 
 async function callHealth() {
-  const handle = createRpcHandler({ log: () => {} });
+  const handle = createRpcHandler({ log: () => {}, allowedOrigin: () => 'http://localhost:3000' });
   const result = await handle(
     new Request('http://localhost:3000/api/rpc/health', {
       method: 'POST',
@@ -16,22 +16,23 @@ async function callHealth() {
   return result.response;
 }
 
+function useEnv(databaseUrl: string | undefined) {
+  vi.stubEnv('DATABASE_URL', databaseUrl);
+  vi.stubEnv('APP_ORIGIN', 'http://localhost:3000');
+  vi.stubEnv('MARKET_DATA_PROVIDER', 'fake');
+  resetEnvCache();
+}
+
+async function reset() {
+  await closeDb();
+  vi.unstubAllEnvs();
+  resetEnvCache();
+}
+
 describe('health (real PostgreSQL)', () => {
-  const previous = process.env.DATABASE_URL;
-
-  beforeAll(() => {
-    process.env.DATABASE_URL = process.env.DATABASE_URL_TEST;
-    process.env.APP_ORIGIN = 'http://localhost:3000';
-    process.env.MARKET_DATA_PROVIDER = 'fake';
-    resetEnvCache();
-  });
-
-  afterAll(async () => {
-    await closeDb();
-    if (previous === undefined) delete process.env.DATABASE_URL;
-    else process.env.DATABASE_URL = previous;
-    resetEnvCache();
-  });
+  beforeEach(() => useEnv(process.env.DATABASE_URL_TEST));
+  afterEach(reset);
+  afterAll(closeDb);
 
   it('runs select 1 against the database and reports ok', async () => {
     const response = await callHealth();
@@ -51,16 +52,20 @@ describe('health (real PostgreSQL)', () => {
     );
     expect(rows.map((r) => r.extname)).toEqual(['citext', 'pg_trgm']);
   });
+});
+
+describe('health (database unreachable)', () => {
+  beforeEach(async () => {
+    await closeDb();
+    useEnv('postgres://nobody:leaked-pw@127.0.0.1:1/none');
+  });
+  afterEach(reset);
 
   it('reports unavailable (no detail) when the database cannot be reached', async () => {
-    await closeDb();
-    process.env.DATABASE_URL = 'postgres://nobody:leaked-pw@127.0.0.1:1/none';
-    resetEnvCache();
     const response = await callHealth();
     const text = await response.text();
     expect(response.status).toBe(200);
     expect(JSON.parse(text).json).toMatchObject({ status: 'degraded', db: 'unavailable' });
     expect(text).not.toMatch(/leaked-pw|ECONNREFUSED|127\.0\.0\.1/);
-    await closeDb();
   });
 });

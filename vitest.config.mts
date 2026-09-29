@@ -26,6 +26,16 @@ export default defineConfig({
         },
       },
       {
+        // Next route handlers imported directly (node env, no server needed).
+        resolve: { alias: { 'server-only': serverOnlyStub } },
+        test: {
+          name: 'web',
+          include: ['apps/web/**/*.test.ts'],
+          exclude: ['**/node_modules/**', 'apps/web/.next/**', 'apps/web/e2e/**'],
+          environment: 'node',
+        },
+      },
+      {
         // Needs PostgreSQL (DATABASE_URL_TEST). Not part of `pnpm test`; run `pnpm test:integration`.
         resolve: { alias: { 'server-only': serverOnlyStub } },
         test: {

@@ -13,7 +13,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "pnpm -r --parallel typecheck",
-    "test": "vitest run --project domain --project server",
+    "test": "vitest run --project domain --project server --project web",
     "test:e2e": "pnpm --filter @waddlers/web test:e2e",
     "test:integration": "vitest run --project integration",
     "db:migrate": "pnpm --filter @waddlers/server db:migrate",

@@ -305,6 +305,9 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@orpc/client':
+        specifier: ^1.15.4
+        version: 1.15.4
       '@types/node':
         specifier: ^26.6.3
         version: 26.6.3
