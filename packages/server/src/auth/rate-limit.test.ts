@@ -83,14 +83,27 @@ describe('BackoffLimiter', () => {
     expect(limiter.tryAcquire('u')).toBe(0);
   });
 
-  it('does not evict a blocking key', () => {
+  it('keeps backoff levels on eviction: only entries under their free attempts are dropped', () => {
     const c = clock();
     const limiter = new BackoffLimiter({ ...options, maxKeys: 2, now: c.now });
-    for (let i = 0; i < 3; i++) limiter.tryAcquire('blocked');
-    limiter.tryAcquire('a');
-    limiter.tryAcquire('b');
-    limiter.tryAcquire('c');
-    expect(limiter.tryAcquire('blocked')).toBeGreaterThan(0);
+    for (let i = 0; i < 3; i++) limiter.tryAcquire('victim'); // reached the first level
+    c.advance(1_000); // its delay elapsed: it is no longer "blocking" but keeps its level
+    limiter.tryAcquire('junk1');
+    limiter.tryAcquire('junk2');
+    limiter.tryAcquire('junk3'); // flooding with junk keys must not reset 'victim'
+    limiter.tryAcquire('junk4');
+    // 'victim' still escalates from its retained level (4th attempt => 2 s), not from scratch.
+    expect(limiter.tryAcquire('victim')).toBe(0);
+    expect(limiter.tryAcquire('victim')).toBe(2_000);
+  });
+
+  it('expired (idle) entries are reclaimed', () => {
+    const c = clock();
+    const limiter = new BackoffLimiter({ ...options, maxKeys: 1, now: c.now });
+    for (let i = 0; i < 3; i++) limiter.tryAcquire('old');
+    c.advance(61_000);
+    limiter.tryAcquire('new'); // triggers eviction; 'old' is idle-expired
+    expect(limiter.tryAcquire('old')).toBe(0);
   });
 });
 
@@ -163,5 +176,39 @@ describe('LoginRateLimiter (unknown IP)', () => {
     if (!last?.allowed) throw new Error('expected allowed');
     last.succeed();
     expect(limiter.acquire('alice', 'unknown').allowed).toBe(true);
+  });
+});
+
+describe('LoginRateLimiter (device budget)', () => {
+  it('a device has its own budget: 5 attempts, then only that device is locked out for 15 min', () => {
+    const c = clock();
+    const limiter = new LoginRateLimiter({ now: c.now });
+    for (let i = 0; i < 5; i++)
+      expect(limiter.acquire('alice', 'unknown', 'dev-1').allowed).toBe(true);
+    const locked = limiter.acquire('alice', 'unknown', 'dev-1');
+    expect(!locked.allowed && locked.retryAfterMs).toBe(15 * 60_000);
+    expect(limiter.acquire('alice', 'unknown', 'dev-2').allowed).toBe(true); // another device
+    c.advance(15 * 60_000);
+    expect(limiter.acquire('alice', 'unknown', 'dev-1').allowed).toBe(true);
+  });
+
+  it('is independent of the shared budgets in both directions', () => {
+    const limiter = new LoginRateLimiter({ now: clock().now });
+    for (let i = 0; i < 100; i++) limiter.acquire('alice', 'unknown'); // attacker at the cap
+    for (let i = 0; i < 100; i++) limiter.acquire('alice', '9.9.9.9');
+    expect(limiter.acquire('alice', 'unknown', 'dev-1').allowed).toBe(true);
+    expect(limiter.acquire('alice', '9.9.9.9', 'dev-1').allowed).toBe(true);
+    for (let i = 0; i < 10; i++) limiter.acquire('bob', 'unknown', 'dev-b'); // device lock ...
+    expect(limiter.acquire('bob', 'unknown').allowed).toBe(true); // ... does not lock the shared path
+  });
+
+  it('success clears the device counter', () => {
+    const limiter = new LoginRateLimiter({ now: clock().now });
+    for (let i = 0; i < 4; i++) limiter.acquire('alice', 'unknown', 'dev-1');
+    const ok = limiter.acquire('alice', 'unknown', 'dev-1');
+    if (!ok.allowed) throw new Error('expected allowed');
+    ok.succeed();
+    for (let i = 0; i < 5; i++)
+      expect(limiter.acquire('alice', 'unknown', 'dev-1').allowed).toBe(true);
   });
 });

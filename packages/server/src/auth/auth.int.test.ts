@@ -37,8 +37,10 @@ describe('auth.login', () => {
     expect(JSON.stringify(res.json)).not.toMatch(/hash|password|argon/i);
     expect(res.headers.get('cache-control')).toBe('no-store');
 
-    expect(res.setCookies).toHaveLength(1);
-    const cookie = res.setCookies[0]!;
+    // Session cookie + device cookie (device.ts).
+    expect(res.setCookies).toHaveLength(2);
+    const cookie = res.setCookies.find((c) => c.startsWith('__Host-wd_session='))!;
+    expect(res.setCookies.some((c) => c.startsWith('__Host-wd_device='))).toBe(true);
     expect(cookie).toMatch(/^__Host-wd_session=[A-Za-z0-9_-]{43};/);
     for (const attr of [
       'HttpOnly',

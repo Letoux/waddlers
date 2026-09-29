@@ -7,11 +7,13 @@ import type { RouterDeps } from '../src/router';
 
 export const ORIGIN = 'http://localhost:3000';
 export const PASSWORD = 'correct horse battery staple';
+export const TEST_AUTH_SECRET = 'test-auth-secret-0123456789abcdef0123456789';
 
 export function useTestEnv(): void {
   vi.stubEnv('DATABASE_URL', process.env.DATABASE_URL_TEST);
   vi.stubEnv('APP_ORIGIN', ORIGIN);
   vi.stubEnv('MARKET_DATA_PROVIDER', 'fake');
+  vi.stubEnv('AUTH_SECRET', TEST_AUTH_SECRET);
   resetEnvCache();
 }
 
@@ -37,6 +39,11 @@ export interface RpcResult {
   headers: Headers;
 }
 
+/** `name=value; name2=value2` for the Set-Cookie headers of a response (like a browser jar). */
+export function cookieJar(setCookies: string[]): string {
+  return setCookies.map(cookieValue).join('; ');
+}
+
 export function cookieValue(setCookie: string): string {
   return setCookie.split(';')[0] ?? '';
 }
@@ -47,6 +54,7 @@ export function createApp(deps: RouterDeps = {}) {
     log: () => {},
     allowedOrigin: () => ORIGIN,
     clientIp: () => '203.0.113.1',
+    authSecret: () => TEST_AUTH_SECRET,
     ...deps,
   });
 

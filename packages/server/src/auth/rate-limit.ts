@@ -59,7 +59,13 @@ export class FailureLimiter {
     this.entries.delete(key);
   }
 
-  /** Never evicts a key that is currently blocking; may exceed maxKeys if all are blocking. */
+  /**
+   * Eviction policy (memory bound, soft cap). Expired windows go first; then only keys still
+   * UNDER their budget, oldest first (their loss forgives at most `maxFailures - 1` attempts).
+   * A key at its budget (blocking) is never evicted, so an attacker cannot flush a lock by
+   * flooding other keys; because reaching the budget costs `maxFailures` attempts per key, the
+   * map can only exceed the soft cap proportionally to real attack effort.
+   */
   private evict(now: number): void {
     for (const [key, entry] of this.entries) {
       if (entry.resetAt <= now) this.entries.delete(key);
@@ -123,10 +129,21 @@ export class BackoffLimiter {
     this.entries.delete(key);
   }
 
+  /**
+   * Eviction policy (soft cap): entries idle past `idleResetMs` expire naturally first; then
+   * only entries still under their free attempts are dropped, oldest first. Entries that reached
+   * a backoff level KEEP it (never evicted early): otherwise flooding the map with junk usernames
+   * would reset the delay of the username being attacked. Reaching a level costs
+   * `freeAttempts` requests per key inside the idle window, so growth beyond the soft cap tracks
+   * real attack effort (bounded by the request rate x 15 min); acceptable for one instance (D13).
+   */
   private evict(now: number): void {
     for (const [key, entry] of this.entries) {
+      if (now - entry.lastAt > this.options.idleResetMs) this.entries.delete(key);
+    }
+    for (const [key, entry] of this.entries) {
       if (this.entries.size < this.maxKeys) break;
-      if (entry.blockedUntil <= now) this.entries.delete(key);
+      if (entry.count < this.options.freeAttempts) this.entries.delete(key);
     }
   }
 }
@@ -142,6 +159,8 @@ export type Reservation =
  * Login/changePassword throttling.
  * - Known client IP: 5 attempts per (username, IP) and 20 per username per 15 minutes, hard
  *   block afterwards (the per-username cap holds even if forwarded-IP headers are spoofed).
+ * - A verified device cookie switches to a per-device budget (5 attempts, then that device only
+ *   is locked out for 15 minutes) and skips both shared paths below.
  * - Unknown IP (no trusted proxy header configured): every client looks alike, so a pair limit
  *   would let anonymous failures lock a user out for everyone. Only a per-username progressive
  *   delay applies (5 free attempts, then 2 s doubling to 60 s).
@@ -151,12 +170,15 @@ export class LoginRateLimiter {
   private readonly perPair: FailureLimiter;
   private readonly perUser: FailureLimiter;
   private readonly backoff: BackoffLimiter;
+  private readonly perDevice: FailureLimiter;
 
   constructor(options: { now?: () => number } = {}) {
     const now = options.now ? { now: options.now } : {};
     const windowMs = 15 * 60_000;
     this.perPair = new FailureLimiter({ windowMs, maxFailures: 5, ...now });
     this.perUser = new FailureLimiter({ windowMs, maxFailures: 20, ...now });
+    // Per device: 5 attempts, then only that device is locked out for the rest of the window.
+    this.perDevice = new FailureLimiter({ windowMs, maxFailures: 5, ...now });
     this.backoff = new BackoffLimiter({
       freeAttempts: 5,
       baseMs: 2_000,
@@ -166,8 +188,20 @@ export class LoginRateLimiter {
     });
   }
 
-  acquire(username: string, ip: string): Reservation {
+  /**
+   * `deviceId` is the id of a VERIFIED device cookie for this username (see device.ts). It
+   * bypasses the shared budgets entirely and uses its own, so a legitimate browser keeps
+   * working while an attacker exhausts the shared per-username budget.
+   */
+  acquire(username: string, ip: string, deviceId?: string): Reservation {
     const user = username.trim().toLowerCase();
+    if (deviceId) {
+      const key = `${user}|${deviceId}`;
+      const wait = this.perDevice.blockedFor(key);
+      if (wait > 0) return { allowed: false, retryAfterMs: wait };
+      this.perDevice.record(key);
+      return { allowed: true, succeed: () => this.perDevice.reset(key) };
+    }
     if (ip === 'unknown') {
       const wait = this.backoff.tryAcquire(user);
       if (wait > 0) return { allowed: false, retryAfterMs: wait };

@@ -4,6 +4,7 @@ import { closeDb, getDb } from './db/client';
 import { resetEnvCache } from './env';
 import {
   createApp,
+  TEST_AUTH_SECRET,
   PASSWORD,
   releaseTestEnv,
   resetAuthTables,
@@ -14,6 +15,7 @@ function useUnreachableDb() {
   vi.stubEnv('DATABASE_URL', 'postgres://nobody:leaked-pw@127.0.0.1:1/none');
   vi.stubEnv('APP_ORIGIN', 'http://localhost:3000');
   vi.stubEnv('MARKET_DATA_PROVIDER', 'fake');
+  vi.stubEnv('AUTH_SECRET', TEST_AUTH_SECRET);
   resetEnvCache();
 }
 

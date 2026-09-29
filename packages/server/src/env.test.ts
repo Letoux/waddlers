@@ -5,6 +5,7 @@ const valid = {
   DATABASE_URL: 'postgres://user:s3cr3t-pw@db:5432/waddlers',
   APP_ORIGIN: 'http://localhost:3000/',
   MARKET_DATA_PROVIDER: 'fake',
+  AUTH_SECRET: 'x'.repeat(32),
 };
 
 describe('parseEnv', () => {
@@ -46,6 +47,7 @@ describe('parseEnv (auth-related)', () => {
   const base = {
     DATABASE_URL: 'postgres://user:pw@db:5432/waddlers',
     MARKET_DATA_PROVIDER: 'fake',
+    AUTH_SECRET: 'x'.repeat(32),
   };
 
   it('requires https in production, except for localhost (Secure __Host- cookie)', () => {
@@ -73,5 +75,28 @@ describe('parseEnv (auth-related)', () => {
     expect(parseEnv(ok).TRUSTED_PROXY_HEADER).toBeUndefined();
     expect(parseEnv({ ...ok, TRUSTED_PROXY_HEADER: '' }).TRUSTED_PROXY_HEADER).toBeUndefined();
     expect(() => parseEnv({ ...ok, TRUSTED_PROXY_HEADER: 'host' })).toThrow(/TRUSTED_PROXY_HEADER/);
+  });
+});
+
+describe('parseEnv (AUTH_SECRET)', () => {
+  const base = {
+    DATABASE_URL: 'postgres://user:pw@db:5432/waddlers',
+    APP_ORIGIN: 'http://localhost:3000',
+    MARKET_DATA_PROVIDER: 'fake',
+  };
+
+  it('is required and must be at least 32 bytes, without echoing the value', () => {
+    expect(() => parseEnv(base)).toThrow(/AUTH_SECRET/);
+    let message = '';
+    try {
+      parseEnv({ ...base, AUTH_SECRET: 'too-short-secret' });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('AUTH_SECRET');
+    expect(message).not.toContain('too-short-secret');
+    expect(parseEnv({ ...base, AUTH_SECRET: 'x'.repeat(32) }).AUTH_SECRET).toHaveLength(32);
+    // Bytes, not characters: 16 two-byte characters are 32 bytes.
+    expect(parseEnv({ ...base, AUTH_SECRET: 'é'.repeat(16) }).AUTH_SECRET).toHaveLength(16);
   });
 });

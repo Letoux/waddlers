@@ -5,6 +5,7 @@ import { getDb } from '../db/client';
 import { sessions, users } from '../db/schema';
 import { createServerClient } from '../server-client';
 import {
+  cookieJar,
   cookieValue,
   createApp,
   PASSWORD,
@@ -13,6 +14,7 @@ import {
   useTestEnv,
 } from '../../test/auth-harness';
 import { SESSION_COOKIE_NAME } from './cookie';
+import { DEVICE_COOKIE_NAME } from './device';
 import { LoginRateLimiter } from './rate-limit';
 import { rotateSession } from './sessions';
 
@@ -245,5 +247,91 @@ describe('disabled users', () => {
     const cookie = await loginAs('alice');
     await disableUser(getDb(), { username: 'alice' });
     expect((await rpc('auth.me', undefined, { cookie })).status).toBe(401);
+  });
+});
+
+describe('device cookie (unknown client IP)', () => {
+  const wrong = { username: 'alice', password: 'nope-nope-nope' };
+  const right = { username: 'alice', password: PASSWORD };
+
+  function app() {
+    return createApp({ loginLimiter: new LoginRateLimiter(), clientIp: () => 'unknown' });
+  }
+  const deviceCookie = (cookies: string[]) =>
+    cookies.find((c) => c.startsWith(`${DEVICE_COOKIE_NAME}=`));
+  async function hammer(rpc: ReturnType<typeof createApp>['rpc'], n = 30) {
+    const results = await Promise.all(Array.from({ length: n }, () => rpc('auth.login', wrong)));
+    return results.map((r) => r.status);
+  }
+
+  it('login sets a hardened device cookie, and reuses the same device id next time', async () => {
+    const { rpc } = app();
+    const first = await rpc('auth.login', right);
+    const cookie = deviceCookie(first.setCookies)!;
+    for (const attr of ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/', 'Max-Age=31536000']) {
+      expect(cookie).toContain(attr);
+    }
+    const again = await rpc('auth.login', right, { cookie: cookieValue(cookie) });
+    expect(cookieValue(deviceCookie(again.setCookies)!)).toBe(cookieValue(cookie));
+    // Failed logins never issue one.
+    expect(deviceCookie((await rpc('auth.login', wrong)).setCookies)).toBeUndefined();
+  });
+
+  it('the victim (with a device cookie) can log in while an attacker hammers the username', async () => {
+    const { rpc } = app();
+    const device = cookieValue(deviceCookie((await rpc('auth.login', right)).setCookies)!);
+    const statuses = await hammer(rpc);
+    expect(statuses.filter((s) => s === 401)).toHaveLength(5);
+    expect(statuses.filter((s) => s === 429).length).toBeGreaterThan(20);
+    // A browser without the device cookie is delayed...
+    expect((await rpc('auth.login', right)).status).toBe(429);
+    // ...but the victim's usual browser gets in, repeatedly.
+    for (let i = 0; i < 3; i++) {
+      expect((await rpc('auth.login', right, { cookie: device })).status).toBe(200);
+    }
+  });
+
+  it('forged, tampered and other-username device cookies are treated as absent', async () => {
+    await createUser(getDb(), { username: 'bob', password: PASSWORD });
+    const { rpc } = app();
+    const bobsDevice = cookieValue(
+      deviceCookie((await rpc('auth.login', { username: 'bob', password: PASSWORD })).setCookies)!,
+    );
+    const aliceDevice = cookieValue(deviceCookie((await rpc('auth.login', right)).setCookies)!);
+    await hammer(rpc); // alice's shared budget is exhausted
+    const tampered = `${aliceDevice.slice(0, -2)}${aliceDevice.endsWith('AA') ? 'BB' : 'AA'}`;
+    const forged = `${DEVICE_COOKIE_NAME}=v1.AAAAAAAAAAAAAAAAAAAAAA.${'A'.repeat(43)}`;
+    for (const cookie of [bobsDevice, tampered, forged, `${DEVICE_COOKIE_NAME}=garbage`]) {
+      const res = await rpc('auth.login', right, { cookie });
+      expect(res.status, cookie).toBe(429);
+    }
+    expect((await rpc('auth.login', right, { cookie: aliceDevice })).status).toBe(200);
+  });
+
+  it('a device is locked out on its own after 5 failures, other devices are not', async () => {
+    const { rpc } = app();
+    const deviceA = cookieValue(deviceCookie((await rpc('auth.login', right)).setCookies)!);
+    // A second browser: obtain its cookie by a fresh login without the first one.
+    const deviceB = cookieValue(deviceCookie((await rpc('auth.login', right)).setCookies)!);
+    expect(deviceB).not.toBe(deviceA);
+    for (let i = 0; i < 5; i++) {
+      expect((await rpc('auth.login', wrong, { cookie: deviceA })).status).toBe(401);
+    }
+    const locked = await rpc('auth.login', right, { cookie: deviceA });
+    expect(locked.status).toBe(429);
+    expect(Number(locked.headers.get('retry-after'))).toBe(15 * 60);
+    expect(locked.setCookies).toEqual([]);
+    expect((await rpc('auth.login', right, { cookie: deviceB })).status).toBe(200);
+    // The failed device never touched the shared budget.
+    expect((await rpc('auth.login', right)).status).toBe(200);
+  });
+
+  it('session and device cookies coexist in the cookie jar', async () => {
+    const { rpc } = app();
+    const login = await rpc('auth.login', right);
+    const jar = cookieJar(login.setCookies);
+    expect(jar).toContain(`${SESSION_COOKIE_NAME}=`);
+    expect(jar).toContain(`${DEVICE_COOKIE_NAME}=`);
+    expect((await rpc('auth.me', undefined, { cookie: jar })).status).toBe(200);
   });
 });

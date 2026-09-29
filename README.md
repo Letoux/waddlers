@@ -9,6 +9,7 @@ Prérequis: Node >= 22.9, pnpm 12 (`corepack enable`), Docker (pour PostgreSQL).
 ```bash
 pnpm install
 cp .env.example .env          # valeurs locales uniquement, jamais commité
+echo "AUTH_SECRET=$(openssl rand -base64 48)" >> .env   # clé HMAC (obligatoire)
 docker compose up -d postgres # PostgreSQL 17 sur localhost:5432
 pnpm db:setup-roles           # rôle applicatif DML-only (APP_DB_PASSWORD), idempotent
 pnpm db:migrate               # migrations (rôle propriétaire: DATABASE_MIGRATE_URL)

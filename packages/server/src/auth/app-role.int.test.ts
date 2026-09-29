@@ -5,7 +5,7 @@ import { closeDb, getDb } from '../db/client';
 import { setupAppRole } from '../db/roles';
 import { resetEnvCache } from '../env';
 import { users } from '../db/schema';
-import { createApp, ORIGIN, PASSWORD } from '../../test/auth-harness';
+import { createApp, ORIGIN, PASSWORD, TEST_AUTH_SECRET } from '../../test/auth-harness';
 
 const ROLE = 'waddlers_app_it';
 const ROLE_PASSWORD = 'it-role-password-0123456789';
@@ -22,6 +22,7 @@ describe('auth flow as the DML-only app role', () => {
     vi.stubEnv('DATABASE_URL', appUrl.toString());
     vi.stubEnv('APP_ORIGIN', ORIGIN);
     vi.stubEnv('MARKET_DATA_PROVIDER', 'fake');
+    vi.stubEnv('AUTH_SECRET', TEST_AUTH_SECRET);
     resetEnvCache();
   });
   afterAll(async () => {

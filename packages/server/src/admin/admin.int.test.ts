@@ -144,6 +144,7 @@ describe('dev seed', () => {
     const env = {
       NODE_ENV: 'development',
       APP_ORIGIN: 'http://localhost:3000',
+      DATABASE_URL: process.env.DATABASE_URL_TEST,
       SEED_USER_PASSWORD: PASSWORD,
       SEED_USER_USERNAME: 'devuser',
     };

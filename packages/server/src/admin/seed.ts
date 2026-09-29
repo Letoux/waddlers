@@ -14,10 +14,22 @@ function isLocalOrigin(origin: string | undefined): boolean {
   }
 }
 
+/** Local database hosts: loopback, or the Compose service name. */
+const LOCAL_DB_HOSTS = new Set([...LOCAL_HOSTNAMES, '::1', 'postgres']);
+
+function isLocalDatabase(url: string | undefined): boolean {
+  try {
+    return url !== undefined && LOCAL_DB_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Dev-only seed: one user with a password taken from the environment. Refuses to run in
- * production, and anywhere APP_ORIGIN is not localhost unless ALLOW_DEV_SEED=1 (a staging
- * database must not receive a known dev password by accident). Idempotent: an existing user
+ * production, and unless BOTH APP_ORIGIN is localhost and the DATABASE_URL host is local
+ * (localhost, 127.0.0.1, ::1, or the Compose service `postgres`), unless ALLOW_DEV_SEED=1 (a
+ * staging/remote database must not receive a known dev password by accident). Idempotent: an existing user
  * is left untouched, its password is NOT reset.
  */
 export async function seedDevUser(
@@ -27,10 +39,17 @@ export async function seedDevUser(
   if (env.NODE_ENV === 'production') {
     throw new AdminError('Refusing to seed: NODE_ENV=production.');
   }
-  if (!isLocalOrigin(env.APP_ORIGIN) && env.ALLOW_DEV_SEED !== '1') {
-    throw new AdminError(
-      'Refusing to seed: APP_ORIGIN is not localhost (set ALLOW_DEV_SEED=1 to override).',
-    );
+  if (env.ALLOW_DEV_SEED !== '1') {
+    if (!isLocalOrigin(env.APP_ORIGIN)) {
+      throw new AdminError(
+        'Refusing to seed: APP_ORIGIN is not localhost (set ALLOW_DEV_SEED=1 to override).',
+      );
+    }
+    if (!isLocalDatabase(env.DATABASE_URL)) {
+      throw new AdminError(
+        'Refusing to seed: DATABASE_URL host is not local (set ALLOW_DEV_SEED=1 to override).',
+      );
+    }
   }
   const username = env.SEED_USER_USERNAME || 'dev';
   const password = env.SEED_USER_PASSWORD;

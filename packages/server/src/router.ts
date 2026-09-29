@@ -65,6 +65,7 @@ export interface RouterDeps {
   loginLimiter?: LoginRateLimiter;
   passwordLimiter?: LoginRateLimiter;
   clientIp?: AuthDeps['clientIp'];
+  authSecret?: AuthDeps['authSecret'];
   /** Test seam: replaces the cookie-to-session lookup. Production always uses the database. */
   authenticate?: (context: RpcContext) => Promise<ResolvedSession | null>;
 }
@@ -77,9 +78,17 @@ export function createRouter({
   loginLimiter = new LoginRateLimiter(),
   passwordLimiter = new LoginRateLimiter(),
   clientIp = (headers) => clientIpFrom(headers, getEnv().TRUSTED_PROXY_HEADER),
+  authSecret = () => getEnv().AUTH_SECRET,
   authenticate: resolveAuth,
 }: RouterDeps = {}) {
-  const deps: AuthDeps = { getDb: getDatabase, now, loginLimiter, passwordLimiter, clientIp };
+  const deps: AuthDeps = {
+    getDb: getDatabase,
+    now,
+    loginLimiter,
+    passwordLimiter,
+    clientIp,
+    authSecret,
+  };
   // Pay the one-off argon2 dummy-hash cost now, not on the first unknown-user login (timing).
   warmDummyHash();
   const os = implement(contract).$context<RpcContext>();

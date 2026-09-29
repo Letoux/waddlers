@@ -7,6 +7,7 @@ import {
   serializeSessionCookie,
   setSessionCookieHeader,
 } from './cookie';
+import { newDeviceId, readDeviceId, serializeDeviceCookie } from './device';
 import { hashPassword, needsRehash, verifyDummy, verifyPassword } from './password';
 import { LoginRateLimiter } from './rate-limit';
 import {
@@ -29,6 +30,8 @@ export interface AuthDeps {
   /** Throttles wrong-current-password guesses on changePassword, per user. */
   passwordLimiter: LoginRateLimiter;
   clientIp: (headers: Headers) => string;
+  /** HMAC key for device cookies (AUTH_SECRET). */
+  authSecret: () => string;
 }
 
 export interface AuthContext {
@@ -104,7 +107,13 @@ export async function login(
 ): Promise<{ user: CurrentUser }> {
   const resHeaders = requireResponseHeaders(ctx);
   // Reserve the attempt synchronously (no await between check and count).
-  const reservation = deps.loginLimiter.acquire(input.username, deps.clientIp(ctx.headers));
+  const secret = deps.authSecret();
+  const knownDevice = readDeviceId(secret, ctx.headers.get('cookie'), input.username);
+  const reservation = deps.loginLimiter.acquire(
+    input.username,
+    deps.clientIp(ctx.headers),
+    knownDevice,
+  );
   if (!reservation.allowed) throttled(errors, ctx, reservation.retryAfterMs);
 
   const db = deps.getDb();
@@ -139,6 +148,11 @@ export async function login(
     });
   });
   setSessionCookieHeader(resHeaders, serializeSessionCookie(token));
+  // Remember this browser for this user (refreshes the cookie if it is already known).
+  resHeaders.append(
+    'set-cookie',
+    serializeDeviceCookie(secret, user.username, knownDevice ?? newDeviceId()),
+  );
   return { user: toCurrentUser(user) };
 }
 

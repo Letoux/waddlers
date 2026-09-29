@@ -31,6 +31,10 @@ export const envSchema = z
       .refine(isHttpOrigin, 'must be an http(s) origin')
       .transform((value) => new URL(value).origin),
     MARKET_DATA_PROVIDER: z.enum(['fake', 'eodhd']),
+    /** HMAC key for device cookies (>= 32 bytes). Never logged; env errors never echo values. */
+    AUTH_SECRET: z
+      .string()
+      .refine((value) => Buffer.byteLength(value, 'utf8') >= 32, 'must be at least 32 bytes'),
     /** Header set by a trusted reverse proxy carrying the client IP (rate limiting). Unset = ignore. */
     TRUSTED_PROXY_HEADER: z.preprocess(
       (value) => (value === '' ? undefined : value), // Compose passes unset vars as ''

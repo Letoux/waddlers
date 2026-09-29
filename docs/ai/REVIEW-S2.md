@@ -14,7 +14,7 @@ Independent code review and security audit of commit cc3585b (S2 backend: users,
 | Review F6 | P3 | Several session Set-Cookie headers in one response | **Fixed.** `setSessionCookieHeader` keeps one (last write). Tests: stale refresh + logout, + changePassword. |
 | Review F9 | P3 | TOO_MANY_REQUESTS untyped; no Retry-After; English username messages | **Fixed.** Typed error with `data.retryAfterSeconds` in the contract (login, changePassword), `Retry-After` header, French `usernameSchema` messages and corrected doc comment, `sessionOutputSchema` exported. |
 | Review F10 | P3 | No test running as the DML-only app role | **Fixed.** `auth/app-role.int.test.ts`: createUser, login, me, changePassword, disableUser. |
-| Review F11/F13 | P3 | Leftover `void hashPassword`, `isError ? {} : {}`; engines; countAndRevoke counted before deleting; CLI ignored `cause.code`; opaque migrate permission error | **Fixed** (apps/web excluded from this pass). Node engines `>=22.9`; `revokeUserSessions` returns rows deleted; `pgErrorCode` reads `cause`; `db:migrate` hints at `DATABASE_MIGRATE_URL` on 42501. |
+| Review F11/F13 | P3 | Leftover `void hashPassword`, `isError ? {} : {}`; engines; countAndRevoke counted before deleting; CLI ignored `cause.code`; opaque migrate permission error | **Fixed** in the backend pass; the apps/web part of F11 (`route.test.ts:56`) is **fixed in frontend pass**. Node engines `>=22.9`; `revokeUserSessions` returns rows deleted; `pgErrorCode` reads `cause`; `db:migrate` hints at `DATABASE_MIGRATE_URL` on 42501. |
 | Audit | P3 | Limiter eviction could drop a blocking key | **Fixed.** Only non-blocking keys are evicted (may exceed the soft cap). Tests. |
 | Audit | P3 | Two cookie parsers | **Fixed.** `parseSessionCookie` is the single parser. |
 | Audit | P3 | Dev seed could run against a non-local database | **Fixed.** Refuses unless `APP_ORIGIN` is localhost or `ALLOW_DEV_SEED=1`. Test. |
@@ -31,3 +31,19 @@ Independent code review and security audit of commit cc3585b (S2 backend: users,
 - **SCRAM verifier in `setup-roles`:** the role password is sent as a literal in `ALTER/CREATE ROLE`, visible in server logs if `log_statement` is `ddl`/`all`. Documented in BACKEND.md: keep statement logging off. Precomputing a SCRAM-SHA-256 verifier is a future improvement.
 - **`next.config.ts` loads the root `.env` in non-Docker dev:** `apps/web` was off-limits during this pass; documented in BACKEND.md. Revisit with the frontend.
 - **Rate limiter is in memory / single instance (D13)** and login attempts are not audit-logged: accepted for the MVP; audit log is an S10 candidate.
+
+## Re-audit / second review
+
+| Ref | Sev | Finding | Status |
+| --- | --- | --- | --- |
+| P2-a | P2 | Unknown-IP backoff: an attacker polling once a second keeps a username at the 60 s cap forever (victim in 0/488 attempts in a simulated hour) | **Fixed (backend).** Signed device cookies (`__Host-wd_device`, HMAC with new required `AUTH_SECRET`): a login with a valid cookie for that username uses its own per-device budget (5 attempts, 15 min lock for that device only) and bypasses the shared backoff. Tests: victim logs in while the attacker hammers; forged/tampered/other-username cookies are treated as absent; per-device lockout. BACKEND.md no longer claims a bounded lock-out: users on a new browser stay delayed during an attack. |
+| P2-b | P2 | Layout guard bypass via RSC navigation | **Frontend pass** (per-page `requireUser`). |
+| P3-a | P3 | `safeNextPath` accepted dot-segments | **Frontend pass.** |
+| P3-b | P3 | Dev seed could target a remote database | **Fixed (backend).** Also refuses unless `DATABASE_URL` host is local (`localhost`, `127.0.0.1`, `::1`, `postgres`) or `ALLOW_DEV_SEED=1`. Test. |
+| P3-c | P3 | E2E database-name guard | **Frontend pass.** |
+| P3-d | P3 | CI info: Playwright traces contain throwaway passwords; E2E uses `next start`, not the standalone output | **Accepted / info** (throwaway credentials against an ephemeral database; standalone output is exercised by the Docker build). Owner: frontend/CI. |
+| FW1-FW9 | - | Frontend review findings | **Frontend pass.** |
+| FX1 | P3 | BACKEND.md integration suite list missing `auth-hardening` and `app-role` | **Fixed.** |
+| FX2 | P3 | Evicting non-blocking keys could reset progress | **Fixed.** Eviction order: expired/idle entries, then only entries still under their free attempts (oldest first); entries at a backoff level or at their budget are kept, so junk-key flooding cannot reset an attacked username. Trade-off (soft cap can be exceeded in proportion to attack effort, D13) documented in BACKEND.md and justified by the cost of reaching a level. |
+
+Operational note for P2-a: `AUTH_SECRET` is now required by the web env schema. CI jobs, Playwright's web server env and `apps/web` route tests that stub the env must provide it (see the handoff for exact lines).

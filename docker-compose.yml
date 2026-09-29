@@ -64,6 +64,8 @@ services:
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
       MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-fake}
       TRUSTED_PROXY_HEADER: ${TRUSTED_PROXY_HEADER:-}
+      # Required by the app (>= 32 bytes); empty here fails fast at the first request.
+      AUTH_SECRET: ${AUTH_SECRET:-}
     ports:
       - '127.0.0.1:3000:3000'
     depends_on:

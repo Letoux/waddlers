@@ -17,6 +17,7 @@ function sink() {
 }
 
 // The DB must never be reached in these tests.
+const LOCAL_DB = 'postgres://waddlers_app:pw@localhost:5432/waddlers';
 const noDb = new Proxy(
   {},
   {
@@ -94,6 +95,7 @@ describe('dev seed', () => {
       seedDevUser(noDb, {
         NODE_ENV: 'production',
         APP_ORIGIN: 'http://localhost:3000',
+        DATABASE_URL: LOCAL_DB,
         SEED_USER_PASSWORD: 'a-long-enough-password',
       }),
     ).rejects.toThrow(/production/);
@@ -101,7 +103,11 @@ describe('dev seed', () => {
 
   it('requires SEED_USER_PASSWORD', async () => {
     await expect(
-      seedDevUser(noDb, { NODE_ENV: 'development', APP_ORIGIN: 'http://localhost:3000' }),
+      seedDevUser(noDb, {
+        NODE_ENV: 'development',
+        APP_ORIGIN: 'http://localhost:3000',
+        DATABASE_URL: LOCAL_DB,
+      }),
     ).rejects.toThrow(/SEED_USER_PASSWORD/);
   });
 
@@ -114,6 +120,36 @@ describe('dev seed', () => {
     // With the override the guard passes and the (unreachable here) database is touched.
     await expect(
       seedDevUser(noDb, { ...env, APP_ORIGIN: 'https://staging.example.com', ALLOW_DEV_SEED: '1' }),
+    ).rejects.toThrow(/db touched/);
+  });
+
+  it('refuses when the DATABASE_URL host is not local, unless ALLOW_DEV_SEED=1', async () => {
+    const env = {
+      NODE_ENV: 'development',
+      APP_ORIGIN: 'http://localhost:3000',
+      SEED_USER_PASSWORD: 'a-long-enough-password',
+    };
+    for (const url of [
+      'postgres://u:p@db.prod.example.com:5432/waddlers',
+      'postgres://u:p@10.0.0.5:5432/waddlers',
+      undefined,
+    ]) {
+      await expect(
+        seedDevUser(noDb, { ...env, ...(url ? { DATABASE_URL: url } : {}) }),
+      ).rejects.toThrow(/DATABASE_URL/);
+    }
+    // Local hosts pass the guard (then hit the unreachable stub database).
+    for (const host of ['localhost', '127.0.0.1', '[::1]', 'postgres']) {
+      await expect(
+        seedDevUser(noDb, { ...env, DATABASE_URL: `postgres://u:p@${host}:5432/waddlers` }),
+      ).rejects.toThrow(/db touched/);
+    }
+    await expect(
+      seedDevUser(noDb, {
+        ...env,
+        DATABASE_URL: 'postgres://u:p@db.prod.example.com:5432/waddlers',
+        ALLOW_DEV_SEED: '1',
+      }),
     ).rejects.toThrow(/db touched/);
   });
 });
