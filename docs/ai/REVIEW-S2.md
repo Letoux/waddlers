@@ -47,3 +47,14 @@ Independent code review and security audit of commit cc3585b (S2 backend: users,
 | FX2 | P3 | Evicting non-blocking keys could reset progress | **Fixed.** Eviction order: expired/idle entries, then only entries still under their free attempts (oldest first); entries at a backoff level or at their budget are kept, so junk-key flooding cannot reset an attacked username. Trade-off (soft cap can be exceeded in proportion to attack effort, D13) documented in BACKEND.md and justified by the cost of reaching a level. |
 
 Operational note for P2-a: `AUTH_SECRET` is now required by the web env schema. CI jobs, Playwright's web server env and `apps/web` route tests that stub the env must provide it (see the handoff for exact lines).
+
+## Final targeted re-audit (411080a, dc1605c) — verdict: approve
+
+P2-a (device cookie: victim with cookie logged in 488/488 under attack), P2-b (anonymous RSC replay now yields a redirect, no page content) and P3-a (31 `next` payloads stay same-origin) confirmed fixed by live probes. No server-only strings in the client bundle. Follow-ups:
+
+| Ref | Sev | Finding | Status |
+| --- | --- | --- | --- |
+| Final P3-1 | P3 | A device cookie survives password reset/change: its holder keeps a private 5-per-15-min guessing budget | Open. Add a per-user `device_epoch` to the MAC, bumped on reset/change (next auth touch). |
+| Final P3-2 | P3 | A shared browser keeps one device cookie; the previous user loses lockout protection there | Accepted (availability only). |
+| Final P3-3 | P3 | ESLint DB ban missed client-reachable files, relative imports into `packages/server` and dynamic `import()` | **Fixed** in the merge commit: patterns applied to all of `apps/web`, `**/packages/server/**` pattern, `no-restricted-syntax` on `ImportExpression`. Probed on pages, components and `server/**`. |
+| Final P3-4 | P3 | `AUTH_SECRET` is length-checked only | Accepted; `.env.example` documents `openssl rand -base64 48`. |

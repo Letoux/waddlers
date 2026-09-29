@@ -34,6 +34,10 @@ export default tseslint.config(
               message:
                 'Client-reachable web code must not import @waddlers/server. Use @waddlers/contracts / oRPC, or move the import under apps/web/app/api/** or apps/web/server/**.',
             },
+            {
+              group: ['drizzle-orm', 'drizzle-orm/*', 'postgres', '**/packages/server/**'],
+              message: 'apps/web must not access the database directly (see FRONTEND.md).',
+            },
           ],
         },
       ],
@@ -57,10 +61,30 @@ export default tseslint.config(
           ],
           patterns: [
             {
-              group: ['@waddlers/server/*', 'drizzle-orm', 'drizzle-orm/*', 'postgres'],
+              group: [
+                '@waddlers/server/*',
+                'drizzle-orm',
+                'drizzle-orm/*',
+                'postgres',
+                '**/packages/server/**',
+              ],
               message: 'apps/web must not access the database directly (see FRONTEND.md).',
             },
           ],
+        },
+      ],
+    },
+  },
+  {
+    // Dynamic imports bypass no-restricted-imports: ban raw DB drivers that way too.
+    files: ['apps/web/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            'ImportExpression[source.value=/^(drizzle-orm|postgres|@waddlers\\/server\\/)|packages\\/server\\//]',
+          message: 'apps/web must not access the database directly (see FRONTEND.md).',
         },
       ],
     },
