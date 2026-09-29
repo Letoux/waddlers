@@ -97,11 +97,22 @@ describe('findBasePrice', () => {
     });
   });
 
-  it.each(['0', '-5'])('fails on a non-positive base (%s)', (close) => {
-    expect(findBasePrice([pt('2026-06-01', close)], '2026-06-02')).toEqual({
+  it.each(['0', '-5'])('skips a close of %s and falls back to the previous valid close', (bad) => {
+    const s = [pt('2026-05-29', '10'), pt('2026-06-01', bad)];
+    expect(findBasePrice(s, '2026-06-01')).toMatchObject({ ok: true, date: '2026-05-29' });
+    expect(findBasePrice(s, '2026-06-08')).toMatchObject({ ok: true, date: '2026-05-29' });
+    // beyond tolerance the fallback is refused, not extended
+    expect(findBasePrice(s, '2026-06-09')).toMatchObject({
       ok: false,
-      reason: 'non_positive_base',
-      date: '2026-06-01',
+      reason: 'gap_exceeds_tolerance',
+    });
+  });
+
+  it('treats a series of only unusable closes as empty', () => {
+    expect(findBasePrice([pt('2026-06-01', '0'), pt('2026-06-02', '-1')], '2026-06-03')).toEqual({
+      ok: false,
+      reason: 'empty_series',
+      date: null,
     });
   });
 
@@ -184,14 +195,14 @@ describe('computePerformance', () => {
     });
   });
 
-  it('propagates base unavailability with the reason and known base date', () => {
+  it('propagates base unavailability with the reason', () => {
     const r = computePerformance({
       series: [pt('2026-06-11', '0')],
       period: '1w',
       asOf,
       end: D('10'),
     });
-    expect(r).toEqual({ value: null, baseDate: '2026-06-11', reason: 'non_positive_base' });
+    expect(r).toEqual({ value: null, baseDate: null, reason: 'empty_series' });
     expect(computePerformance({ series: [], period: '1w', asOf, end: D('10') })).toMatchObject({
       value: null,
       reason: 'empty_series',
@@ -251,16 +262,16 @@ describe('computePerformance', () => {
       expect(r.value?.toFixed()).toBe('125');
     });
 
-    it('fails on a non-positive first point and on a lone as-of datapoint', () => {
-      expect(
-        computePerformance({
-          series: [pt('2026-01-05', '0'), pt('2026-06-18', '5')],
-          period: 'max',
-          asOf,
-          end: D('5'),
-          historyCompleteFrom: '2026-01-01',
-        }),
-      ).toEqual({ value: null, baseDate: '2026-01-05', reason: 'non_positive_base' });
+    it('skips non-positive closes for the first point, and fails on a lone as-of datapoint', () => {
+      const r = computePerformance({
+        series: [pt('2026-01-05', '0'), pt('2026-01-06', '8'), pt('2026-06-18', '5')],
+        period: 'max',
+        asOf,
+        end: D('5'),
+        historyCompleteFrom: '2026-01-01',
+      });
+      expect(r.baseDate).toBe('2026-01-06');
+      expect(r.value?.toFixed()).toBe('-37.5');
       expect(
         computePerformance({
           series: [pt('2026-06-18', '5')],

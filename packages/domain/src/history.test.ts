@@ -337,6 +337,10 @@ describe('buildValueSeries (D6)', () => {
     expect(r.headline?.fromDate).toBe(target);
     expect(r.headline?.startValue.toFixed()).toBe('200');
     expect(r.headline?.changePct?.toFixed()).toBe(perf.value?.toFixed());
+    // label with the real trading day, not the Sunday target
+    expect(r.headline?.baseDate).toBe('2026-06-05');
+    expect(r.points[0]).toMatchObject({ date: target, dataDate: '2026-06-05' });
+    expect(r.points[1]?.dataDate).toBe('2026-06-08');
   });
 
   it('starts later (fromDate stated) when a recent listing has no complete point at the target', () => {
@@ -501,7 +505,13 @@ describe('buildValueSeries (D6)', () => {
       from: '2026-06-01',
       to: '2026-06-02',
     });
-    expect(empty).toEqual({ points: [], headline: null, totalPoints: 0, invalidPositions: [] });
+    expect(empty).toEqual({
+      points: [],
+      headline: null,
+      totalPoints: 0,
+      invalidPositions: [],
+      leadingMissing: [],
+    });
     const watch = buildValueSeries({
       positions: [position('w', null, 'EUR', [['2026-06-01', '1']])],
       fx: new Map(),
@@ -593,5 +603,95 @@ describe('buildValueSeries (D6)', () => {
     expect(r.points[0]?.value?.toFixed()).toBe(r.headline?.startValue.toFixed());
     expect(r.points.at(-1)?.value?.toFixed()).toBe(r.headline?.endValue.toFixed());
     expect(r.points.every((p) => p.value !== null)).toBe(true);
+  });
+
+  it('uses the previous valid close when a 0 close falls on the target date, like computePerformance', () => {
+    const rows: [string, string][] = [
+      ['2026-06-05', '100'],
+      ['2026-06-11', '0'], // target date (1w from 2026-06-18)
+      ['2026-06-12', '110'],
+      ['2026-06-18', '140'],
+    ];
+    const target = targetBaseDate('1w', '2026-06-18') as string;
+    expect(target).toBe('2026-06-11');
+    const r = buildValueSeries({
+      positions: [position('a', '1', 'EUR', rows)],
+      fx: new Map(),
+      from: target,
+      to: '2026-06-18',
+    });
+    const perf = computePerformance({
+      series: closes(rows),
+      period: '1w',
+      asOf: '2026-06-18',
+      end: D('140'),
+    });
+    expect(perf.baseDate).toBe('2026-06-05');
+    expect(perf.value?.toFixed()).toBe('40');
+    expect(r.headline?.baseDate).toBe('2026-06-05');
+    expect(r.headline?.startValue.toFixed()).toBe('100');
+    expect(r.headline?.changePct?.toFixed()).toBe('40');
+  });
+
+  it('uses the most recent close date among positions as the headline baseDate', () => {
+    const r = buildValueSeries({
+      positions: [
+        position('a', '1', 'EUR', [
+          ['2026-06-03', '10'],
+          ['2026-06-10', '11'],
+        ]),
+        position('b', '1', 'EUR', [
+          ['2026-06-04', '1'],
+          ['2026-06-10', '2'],
+        ]),
+      ],
+      fx: new Map(),
+      from: '2026-06-06',
+      to: '2026-06-10',
+    });
+    expect(r.headline).toMatchObject({ fromDate: '2026-06-06', baseDate: '2026-06-04' });
+    expect(r.points.at(-1)?.dataDate).toBe('2026-06-10');
+  });
+
+  it('exposes leadingMissing when trimming leaves an empty or single-point series', () => {
+    const old = position('old', '1', 'EUR', [
+      ['2026-06-01', '10'],
+      ['2026-06-09', '10'],
+    ]);
+    // recent listing trading on the last day only: single complete point
+    const single = buildValueSeries({
+      positions: [old, position('new', '1', 'EUR', [['2026-06-09', '5']])],
+      fx: new Map(),
+      from: '2026-06-01',
+      to: '2026-06-09',
+    });
+    expect(single.points).toHaveLength(1);
+    expect(single.headline).toBeNull();
+    expect(single.leadingMissing).toEqual(['new']);
+    // nothing ever complete: empty series
+    const none = buildValueSeries({
+      positions: [old, position('never', '1', 'EUR', [])],
+      fx: new Map(),
+      from: '2026-06-01',
+      to: '2026-06-09',
+    });
+    expect(none.points).toEqual([]);
+    expect(none.leadingMissing).toEqual(['never']);
+    // FX missing at the start is reported too
+    const fxLate = buildValueSeries({
+      positions: [position('us', '1', 'USD', [['2026-06-01', '1']])],
+      fx: fxOf({ USD: [['2026-06-02', '2']] }),
+      from: '2026-06-01',
+      to: '2026-06-01',
+    });
+    expect(fxLate.leadingMissing).toEqual(['us']);
+    // nothing trimmed: empty
+    const full = buildValueSeries({
+      positions: [old],
+      fx: new Map(),
+      from: '2026-06-01',
+      to: '2026-06-09',
+    });
+    expect(full.leadingMissing).toEqual([]);
   });
 });

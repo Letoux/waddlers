@@ -1,4 +1,4 @@
-import { Decimal, decimalToString, parseDecimal } from './decimal';
+import { Decimal, asDecimal, decimalToString, parseDecimal } from './decimal';
 
 /** ISO 4217 code (`EUR`) or a known minor-unit alias (`GBX`, `GBp`, `ZAc`). */
 export type CurrencyCode = string;
@@ -56,7 +56,7 @@ export function normalizeMoney(money: Money): Money | null {
   const n = normalizeCurrency(money.currency);
   if (!n) return null;
   return {
-    amount: money.amount === null ? null : money.amount.div(n.divisor),
+    amount: money.amount === null ? null : asDecimal(money.amount).div(n.divisor),
     currency: n.currency,
   };
 }

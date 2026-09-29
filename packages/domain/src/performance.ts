@@ -26,7 +26,6 @@ export type UnavailableReason =
   | 'empty_series'
   | 'history_starts_after_target'
   | 'gap_exceeds_tolerance'
-  | 'non_positive_base'
   | 'end_missing'
   | 'end_invalid'
   | 'history_completeness_unknown'
@@ -46,16 +45,22 @@ export function resolveTolerance(toleranceDays: number | undefined): number {
   return t;
 }
 
-/** Valid points only, ascending by date; duplicate dates: the last occurrence in input wins. */
+/**
+ * Usable points only, ascending by date. A close that is null, non-finite or <= 0 is not a usable
+ * market value: it is skipped everywhere (base lookup, max, history), so lookups fall back to
+ * the previous valid close within tolerance. Duplicate dates: the last occurrence in input wins,
+ * and an unusable last value drops the date.
+ */
 export function cleanSeries(series: readonly PricePoint[]): { date: PlainDate; close: Decimal }[] {
   const byDate = new Map<PlainDate, Decimal>();
   for (const p of series) {
     assertPlainDate(p.date);
-    if (p.close === null || !p.close.isFinite()) {
-      byDate.delete(p.date); // a later null overrides an earlier value for the same date
+    const close = p.close === null ? null : asDecimal(p.close);
+    if (close === null || !close.isFinite() || !close.gt(0)) {
+      byDate.delete(p.date); // a later unusable value overrides an earlier one for the same date
       continue;
     }
-    byDate.set(p.date, asDecimal(p.close));
+    byDate.set(p.date, close);
   }
   return [...byDate.entries()]
     .map(([date, close]) => ({ date, close }))
@@ -80,8 +85,8 @@ export function closeOnOrBefore(
 
 /**
  * Base price for a target date: close of the nearest trading day on or before it.
- * Fails (never guesses) when history starts after the target, the nearest earlier
- * point is more than `toleranceDays` away, or the base is <= 0.
+ * Fails (never guesses) when history starts after the target or the nearest earlier
+ * usable point is more than `toleranceDays` away.
  */
 export function findBasePrice(
   series: readonly PricePoint[],
@@ -104,7 +109,6 @@ export function findBasePrice(
   if (diffDays(base.date, target) > tolerance) {
     return { ok: false, reason: 'gap_exceeds_tolerance', date: base.date };
   }
-  if (!base.close.gt(0)) return { ok: false, reason: 'non_positive_base', date: base.date };
   return { ok: true, date: base.date, close: base.close };
 }
 
@@ -125,8 +129,11 @@ export interface PerformanceInput {
    */
   end: Decimal | null;
   /**
-   * D14: earliest date from which the stored history is known to be complete
-   * (back to the listing's first trade). Required for `max`, ignored otherwise.
+   * D14: date of the FIRST STORED CLOSE, i.e. the listing's first trade date, from which the
+   * stored history is known to be complete. It must NOT be the start date of the backfill
+   * request (a request starting before the listing existed would make `max` look valid while
+   * the real first trade is unknown, and one starting after it would silently truncate `max`).
+   * Required for `max`, ignored otherwise.
    */
   historyCompleteFrom?: PlainDate | null;
   toleranceDays?: number;
@@ -167,9 +174,7 @@ export function computePerformance(input: PerformanceInput): PerformanceResult {
       // Single datapoint at as-of: no elapsed time, a 0 % "performance" would be fabricated.
       return { value: null, baseDate: first.date, reason: 'insufficient_history' };
     }
-    base = first.close.gt(0)
-      ? { ok: true, date: first.date, close: first.close }
-      : { ok: false, reason: 'non_positive_base', date: first.date };
+    base = { ok: true, date: first.date, close: first.close };
   } else {
     const target = targetBaseDate(period, asOf) as PlainDate;
     base = findBasePrice(series, target, { toleranceDays: tolerance });

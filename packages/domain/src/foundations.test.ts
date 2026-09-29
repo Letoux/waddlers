@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { moneyFromStrings, moneyToStrings, normalizeCurrency, normalizeMoney } from './currency';
+import { Decimal as DecimalBase } from 'decimal.js';
 import { Decimal, decimalToString, parseDecimal } from './decimal';
 import { PERIODS, isPeriod, targetBaseDate, type Period } from './period';
 import { addDays, addMonths, assertPlainDate, diffDays, isPlainDate } from './plain-date';
@@ -140,5 +141,17 @@ describe('periods (specs §11/§31)', () => {
     ['max', '2026-06-18', null],
   ])('%s from %s -> %s', (period, asOf, expected) => {
     expect(targetBaseDate(period, asOf)).toBe(expected);
+  });
+});
+
+describe('normalizeMoney foreign decimals', () => {
+  it('re-wraps a foreign decimal.js clone before dividing', () => {
+    const Foreign = DecimalBase.clone({ precision: 3, rounding: DecimalBase.ROUND_DOWN });
+    const m = normalizeMoney({
+      amount: new Foreign('1234.5678') as unknown as Decimal,
+      currency: 'GBX',
+    });
+    // domain precision, not the clone's 3 digits
+    expect(m?.amount?.toFixed()).toBe('12.345678');
   });
 });

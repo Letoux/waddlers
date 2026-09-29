@@ -31,12 +31,20 @@ export interface SeriesPoint {
   value: Decimal | null;
   /** Ids of counted positions that could not be valued that day (close or FX missing, invalid quantity). Empty when `value` is set. */
   missing: string[];
+  /**
+   * Actual date of the closes behind `value`: the most recent close date among the counted
+   * positions used that day (a trading day, unlike `date` when it is a weekend target).
+   * `null` when `value` is null.
+   */
+  dataDate: PlainDate | null;
   /** % change vs the headline start value; `null` when the value, the headline or its start (<= 0) is unavailable. */
   evolutionPct: Decimal | null;
 }
 
 export interface Headline {
   fromDate: PlainDate;
+  /** = the first point's `dataDate`: the actual close date to label "depuis le 5 juin". */
+  baseDate: PlainDate;
   toDate: PlainDate;
   startValue: Decimal;
   endValue: Decimal;
@@ -53,6 +61,12 @@ export interface ValueSeries {
   totalPoints: number;
   /** Counted positions whose quantity is invalid (negative/NaN/Infinity): every day is null. */
   invalidPositions: { positionId: string; reason: 'quantity_invalid' }[];
+  /**
+   * Ids of counted positions with no usable data at the first point of the period (`from`),
+   * set when leading points were trimmed (empty otherwise). Lets the UI say "pas de donnée
+   * avant la création de X", including when the trimmed series is empty or has a single point.
+   */
+  leadingMissing: string[];
 }
 
 export interface ValueSeriesInput {
@@ -73,7 +87,11 @@ interface Dated<T> {
 }
 
 /** Latest entry on/before `date` within `tolerance` days; `sorted` ascending. Binary search. */
-function latest<T>(sorted: readonly Dated<T>[], date: PlainDate, tolerance: number): T | null {
+function latest<T>(
+  sorted: readonly Dated<T>[],
+  date: PlainDate,
+  tolerance: number,
+): Dated<T> | null {
   let lo = 0;
   let hi = sorted.length - 1;
   let idx = -1;
@@ -89,7 +107,7 @@ function latest<T>(sorted: readonly Dated<T>[], date: PlainDate, tolerance: numb
   }
   if (idx < 0) return null;
   const found = sorted[idx] as Dated<T>;
-  return diffDays(found.date, date) <= tolerance ? found.v : null;
+  return diffDays(found.date, date) <= tolerance ? found : null;
 }
 
 /**
@@ -147,9 +165,7 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
         quantity,
         valid,
         currency: p.currency,
-        closes: cleanSeries(p.closes)
-          .filter((c) => c.close.gt(0))
-          .map((c) => ({ date: c.date, v: c.close })),
+        closes: cleanSeries(p.closes).map((c) => ({ date: c.date, v: c.close })),
       };
     });
 
@@ -172,7 +188,7 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
   }
 
   if (counted.length === 0) {
-    return { points: [], headline: null, totalPoints: 0, invalidPositions };
+    return { points: [], headline: null, totalPoints: 0, invalidPositions, leadingMissing: [] };
   }
 
   const dates = new Set<PlainDate>([from]);
@@ -187,9 +203,10 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
     const rates = new Map<CurrencyCode, Decimal>();
     for (const [currency, series] of fxSeries) {
       const rate = latest(series, date, tolerance);
-      if (rate !== null) rates.set(currency, rate);
+      if (rate !== null) rates.set(currency, rate.v);
     }
     const missing: string[] = [];
+    let dataDate: PlainDate | null = null;
     let value = new Decimal(0);
     for (const p of counted) {
       if (!p.valid) {
@@ -197,18 +214,37 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
         continue;
       }
       const close = latest(p.closes, date, tolerance);
-      const converted = close === null ? null : convertAmount(close, p.currency, reference, rates);
+      const converted =
+        close === null ? null : convertAmount(close.v, p.currency, reference, rates);
       if (converted === null || !converted.ok) {
         missing.push(p.id);
         continue;
       }
       value = value.plus(p.quantity.times(converted.amount));
+      if (close !== null && (dataDate === null || compareDates(close.date, dataDate) > 0)) {
+        dataDate = close.date;
+      }
     }
-    return { date, value: missing.length === 0 ? value : null, missing, evolutionPct: null };
+    return {
+      date,
+      value: missing.length === 0 ? value : null,
+      missing,
+      dataDate: missing.length === 0 ? dataDate : null,
+      evolutionPct: null,
+    };
   });
 
   const firstIdx = full.findIndex((p) => p.value !== null);
-  if (firstIdx < 0) return { points: [], headline: null, totalPoints: 0, invalidPositions };
+  const leadingMissing = firstIdx === 0 ? [] : [...(full[0] as SeriesPoint).missing];
+  if (firstIdx < 0) {
+    return {
+      points: [],
+      headline: null,
+      totalPoints: 0,
+      invalidPositions,
+      leadingMissing: [...(full[0] as SeriesPoint).missing],
+    };
+  }
   let lastIdx = full.length - 1;
   while (full[lastIdx]?.value === null) lastIdx -= 1;
   const trimmed = full.slice(firstIdx, lastIdx + 1);
@@ -220,6 +256,7 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
       ? null
       : {
           fromDate: first.date,
+          baseDate: first.dataDate as PlainDate,
           toDate: last.date,
           startValue: first.value,
           endValue: last.value,
@@ -234,5 +271,5 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
       p.value !== null && start !== null ? p.value.div(start).minus(1).times(100) : null,
   }));
 
-  return { points, headline, totalPoints: trimmed.length, invalidPositions };
+  return { points, headline, totalPoints: trimmed.length, invalidPositions, leadingMissing };
 }
