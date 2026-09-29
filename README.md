@@ -15,13 +15,16 @@ pnpm dev                      # http://localhost:3000
 
 ## Commandes
 
-| Commande                          | Rôle                                |
-| --------------------------------- | ----------------------------------- |
-| `pnpm lint` / `pnpm format:check` | ESLint / Prettier                   |
-| `pnpm typecheck`                  | tsc strict sur tous les workspaces  |
-| `pnpm test`                       | tests unitaires (Vitest)            |
-| `pnpm build`                      | build Next.js (standalone)          |
-| `pnpm test:e2e`                   | Playwright (nécessite `pnpm build`) |
+| Commande                          | Rôle                                     |
+| --------------------------------- | ---------------------------------------- |
+| `pnpm lint` / `pnpm format:check` | ESLint / Prettier                        |
+| `pnpm typecheck`                  | tsc strict sur tous les workspaces       |
+| `pnpm test`                       | tests unitaires (Vitest)                 |
+| `pnpm build`                      | build Next.js (standalone)               |
+| `pnpm test:integration`           | tests PostgreSQL (`DATABASE_URL_TEST`)   |
+| `pnpm db:generate` / `db:migrate` | migrations Drizzle (générer / appliquer) |
+| `pnpm db:check`                   | cohérence des migrations (drizzle-kit)   |
+| `pnpm test:e2e`                   | Playwright (nécessite `pnpm build`)      |
 
 Première fois pour Playwright: `pnpm --filter @waddlers/web exec playwright install chromium`.
 

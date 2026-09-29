@@ -13,6 +13,11 @@ COPY packages/contracts/package.json packages/contracts/
 COPY packages/server/package.json packages/server/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 
+# One-shot migration runner (Compose `migrate` service): applies packages/server/drizzle.
+FROM deps AS migrate
+COPY packages/server packages/server
+CMD ["pnpm", "--filter", "@waddlers/server", "db:migrate"]
+
 FROM deps AS build
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
