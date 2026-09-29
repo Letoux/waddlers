@@ -13,10 +13,14 @@ COPY packages/contracts/package.json packages/contracts/
 COPY packages/server/package.json packages/server/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 
-# One-shot migration runner (Compose `migrate` service): applies packages/server/drizzle.
+# One-shot migration runner (Compose `migrate` service): sets up the DML-only app role, then
+# applies packages/server/drizzle. Non-root; invokes tsx directly (no pnpm/corepack at runtime,
+# which would try to write to a home directory).
 FROM deps AS migrate
 COPY packages/server packages/server
-CMD ["pnpm", "--filter", "@waddlers/server", "db:migrate"]
+WORKDIR /repo/packages/server
+USER node
+CMD ["sh", "-c", "./node_modules/.bin/tsx src/scripts/setup-roles.ts && ./node_modules/.bin/tsx src/scripts/migrate.ts"]
 
 FROM deps AS build
 COPY . .

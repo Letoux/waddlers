@@ -18,7 +18,10 @@
     "test:integration": "vitest run --project integration",
     "db:migrate": "pnpm --filter @waddlers/server db:migrate",
     "db:generate": "pnpm --filter @waddlers/server db:generate",
-    "db:check": "pnpm --filter @waddlers/server db:check"
+    "db:check": "pnpm --filter @waddlers/server db:check",
+    "db:setup-roles": "pnpm --filter @waddlers/server db:setup-roles",
+    "db:seed": "pnpm --filter @waddlers/worker db:seed",
+    "admin": "pnpm --filter @waddlers/worker admin"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

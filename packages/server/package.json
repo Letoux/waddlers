@@ -4,15 +4,18 @@
   "version": "0.0.0",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./admin": "./src/admin/index.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/scripts/migrate.ts",
-    "db:check": "drizzle-kit check"
+    "db:migrate": "tsx --env-file-if-exists=../../.env src/scripts/migrate.ts",
+    "db:check": "drizzle-kit check",
+    "db:setup-roles": "tsx --env-file-if-exists=../../.env src/scripts/setup-roles.ts"
   },
   "dependencies": {
+    "@node-rs/argon2": "^2.2.1",
     "@orpc/contract": "^1.15.4",
     "@orpc/server": "^1.15.4",
     "@waddlers/contracts": "workspace:*",

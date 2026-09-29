@@ -1,51 +1,41 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { closeDb } from './db/client';
+import { createUser } from './admin';
+import { closeDb, getDb } from './db/client';
 import { resetEnvCache } from './env';
-import { createRpcHandler } from './rpc-handler';
+import {
+  createApp,
+  PASSWORD,
+  releaseTestEnv,
+  resetAuthTables,
+  useTestEnv,
+} from '../test/auth-harness';
 
-async function callHealth() {
-  const handle = createRpcHandler({ log: () => {}, allowedOrigin: () => 'http://localhost:3000' });
-  const result = await handle(
-    new Request('http://localhost:3000/api/rpc/health', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-csrf-token': 'orpc' },
-      body: JSON.stringify({}),
-    }),
-  );
-  if (!result.matched) throw new Error('route not matched');
-  return result.response;
-}
-
-function useEnv(databaseUrl: string | undefined) {
-  vi.stubEnv('DATABASE_URL', databaseUrl);
+function useUnreachableDb() {
+  vi.stubEnv('DATABASE_URL', 'postgres://nobody:leaked-pw@127.0.0.1:1/none');
   vi.stubEnv('APP_ORIGIN', 'http://localhost:3000');
   vi.stubEnv('MARKET_DATA_PROVIDER', 'fake');
   resetEnvCache();
 }
 
-async function reset() {
-  await closeDb();
-  vi.unstubAllEnvs();
-  resetEnvCache();
-}
-
-describe('health (real PostgreSQL)', () => {
-  beforeEach(() => useEnv(process.env.DATABASE_URL_TEST));
-  afterEach(reset);
+describe('system status (real PostgreSQL)', () => {
+  beforeEach(async () => {
+    useTestEnv();
+    await resetAuthTables();
+    await createUser(getDb(), { username: 'alice', password: PASSWORD });
+  });
+  afterEach(releaseTestEnv);
   afterAll(closeDb);
 
-  it('runs select 1 against the database and reports ok', async () => {
-    const response = await callHealth();
-    expect(response.status).toBe(200);
-    const { json } = (await response.json()) as {
-      json: { status: string; db: string; time: string };
-    };
-    expect(json).toMatchObject({ status: 'ok', db: 'ok' });
-    expect(Number.isNaN(Date.parse(json.time))).toBe(false);
+  it('requires a session, then runs select 1 and reports ok', async () => {
+    const { rpc, loginAs } = createApp();
+    expect((await rpc('systemStatus')).status).toBe(401);
+    const res = await rpc('systemStatus', undefined, { cookie: await loginAs('alice') });
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ status: 'ok', db: 'ok' });
+    expect(Number.isNaN(Date.parse(res.json['time'] as string))).toBe(false);
   });
 
   it('has the citext and pg_trgm extensions installed by migrations', async () => {
-    const { getDb } = await import('./db/client');
     const { sql } = await import('drizzle-orm');
     const rows = await getDb().execute<{ extname: string }>(
       sql`select extname from pg_extension where extname in ('citext', 'pg_trgm') order by extname`,
@@ -54,18 +44,33 @@ describe('health (real PostgreSQL)', () => {
   });
 });
 
-describe('health (database unreachable)', () => {
+describe('health and status when the database is unreachable', () => {
   beforeEach(async () => {
     await closeDb();
-    useEnv('postgres://nobody:leaked-pw@127.0.0.1:1/none');
+    useUnreachableDb();
   });
-  afterEach(reset);
+  afterEach(releaseTestEnv);
 
-  it('reports unavailable (no detail) when the database cannot be reached', async () => {
-    const response = await callHealth();
-    const text = await response.text();
-    expect(response.status).toBe(200);
-    expect(JSON.parse(text).json).toMatchObject({ status: 'degraded', db: 'unavailable' });
-    expect(text).not.toMatch(/leaked-pw|ECONNREFUSED|127\.0\.0\.1/);
+  it('health stays a pure liveness probe (no DB access, no detail)', async () => {
+    const { rpc } = createApp();
+    const res = await rpc('health', undefined, { browser: false });
+    expect(res.status).toBe(200);
+    expect(res.json).toEqual({ status: 'ok', time: expect.any(String) });
+  });
+
+  it('systemStatus reports unavailable without leaking connection details', async () => {
+    const user = { id: '00000000-0000-4000-8000-000000000001', username: 'alice' };
+    const { rpc } = createApp({
+      authenticate: async () => ({
+        sessionId: 's',
+        user,
+        lastSeenAt: new Date(),
+        expiresAt: new Date(),
+      }),
+    });
+    const res = await rpc('systemStatus');
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ status: 'degraded', db: 'unavailable' });
+    expect(JSON.stringify(res.json)).not.toMatch(/leaked-pw|ECONNREFUSED|127\.0\.0\.1/);
   });
 });

@@ -41,3 +41,37 @@ describe('parseEnv', () => {
     expect(message).not.toContain('mysql://');
   });
 });
+
+describe('parseEnv (auth-related)', () => {
+  const base = {
+    DATABASE_URL: 'postgres://user:pw@db:5432/waddlers',
+    MARKET_DATA_PROVIDER: 'fake',
+  };
+
+  it('requires https in production, except for localhost (Secure __Host- cookie)', () => {
+    const prod = { ...base, NODE_ENV: 'production' };
+    expect(() => parseEnv({ ...prod, APP_ORIGIN: 'http://waddlers.example.com' })).toThrow(
+      /APP_ORIGIN/,
+    );
+    expect(parseEnv({ ...prod, APP_ORIGIN: 'https://waddlers.example.com' }).APP_ORIGIN).toBe(
+      'https://waddlers.example.com',
+    );
+    expect(parseEnv({ ...prod, APP_ORIGIN: 'http://localhost:3000' }).APP_ORIGIN).toBe(
+      'http://localhost:3000',
+    );
+    // Development is not restricted.
+    expect(parseEnv({ ...base, APP_ORIGIN: 'http://192.168.1.10:3000' }).NODE_ENV).toBe(
+      'development',
+    );
+  });
+
+  it('accepts only known proxy headers for TRUSTED_PROXY_HEADER', () => {
+    const ok = { ...base, APP_ORIGIN: 'http://localhost:3000' };
+    expect(parseEnv({ ...ok, TRUSTED_PROXY_HEADER: 'x-forwarded-for' }).TRUSTED_PROXY_HEADER).toBe(
+      'x-forwarded-for',
+    );
+    expect(parseEnv(ok).TRUSTED_PROXY_HEADER).toBeUndefined();
+    expect(parseEnv({ ...ok, TRUSTED_PROXY_HEADER: '' }).TRUSTED_PROXY_HEADER).toBeUndefined();
+    expect(() => parseEnv({ ...ok, TRUSTED_PROXY_HEADER: 'host' })).toThrow(/TRUSTED_PROXY_HEADER/);
+  });
+});

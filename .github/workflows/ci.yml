@@ -31,6 +31,17 @@ jobs:
       - run: pnpm format:check
       - run: pnpm typecheck
       - run: pnpm db:check
+      # Schema drift: the committed migrations must match the Drizzle schema (also catches an
+      # untracked, forgotten migration file).
+      - name: Check no schema drift
+        run: |
+          pnpm db:generate
+          if [ -n "$(git status --porcelain -- packages/server/drizzle)" ]; then
+            git status --porcelain -- packages/server/drizzle
+            git diff -- packages/server/drizzle
+            echo "::error::Schema changed without a committed migration (run pnpm db:generate)."
+            exit 1
+          fi
       - run: pnpm test
 
   build-e2e:
@@ -89,5 +100,5 @@ jobs:
       # Also exercises the migrate runner used by Compose; the suite re-runs it (idempotent).
       - run: pnpm db:migrate
         env:
-          DATABASE_URL: ${{ env.DATABASE_URL_TEST }}
+          DATABASE_MIGRATE_URL: ${{ env.DATABASE_URL_TEST }}
       - run: pnpm test:integration

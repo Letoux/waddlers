@@ -1,12 +1,8 @@
 import 'server-only';
-import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
-import postgres from 'postgres';
 import { getEnv } from '../env';
-import * as schema from './schema';
+import { createDatabase, type Database, type PoolState } from './create';
 
-export type Database = PostgresJsDatabase<typeof schema>;
-
-type PoolState = { sql: postgres.Sql; db: Database };
+export type { Database } from './create';
 
 // In development, HMR re-evaluates this module; keep the pool on globalThis so reloads do
 // not leak connections. Never in production (single module instance).
@@ -18,14 +14,7 @@ let state: PoolState | undefined = cacheOnGlobal ? globalForDb.__waddlersDb : un
 /** Singleton, created on first use (never at import time, so `next build` needs no database). */
 export function getDb(): Database {
   if (!state) {
-    const sql = postgres(getEnv().DATABASE_URL, {
-      max: 10,
-      connect_timeout: 5,
-      idle_timeout: 30,
-      // Never forward server NOTICE output (may include object names) to stdout.
-      onnotice: () => {},
-    });
-    state = { sql, db: drizzle(sql, { schema }) };
+    state = createDatabase(getEnv().DATABASE_URL);
     if (cacheOnGlobal) globalForDb.__waddlersDb = state;
   }
   return state.db;

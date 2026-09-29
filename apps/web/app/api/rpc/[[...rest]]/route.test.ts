@@ -6,7 +6,7 @@ async function loadRoute() {
   vi.resetModules();
   vi.stubEnv('APP_ORIGIN', ORIGIN);
   vi.stubEnv('MARKET_DATA_PROVIDER', 'fake');
-  // Unreachable: health must report degraded, never hang or leak.
+  // Unreachable DB: liveness (health) must not depend on it; nothing may hang or leak.
   vi.stubEnv('DATABASE_URL', 'postgres://nobody:pw@127.0.0.1:1/none');
   return import('./route');
 }

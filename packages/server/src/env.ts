@@ -20,15 +20,36 @@ function isHttpOrigin(value: string): boolean {
 
 // Refinement messages are static on purpose: a failing value (which may embed a
 // password) must never be echoed back.
-export const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  DATABASE_URL: z.string().refine(isPostgresUrl, 'must be a postgres:// or postgresql:// URL'),
-  APP_ORIGIN: z
-    .string()
-    .refine(isHttpOrigin, 'must be an http(s) origin')
-    .transform((value) => new URL(value).origin),
-  MARKET_DATA_PROVIDER: z.enum(['fake', 'eodhd']),
-});
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+export const envSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    DATABASE_URL: z.string().refine(isPostgresUrl, 'must be a postgres:// or postgresql:// URL'),
+    APP_ORIGIN: z
+      .string()
+      .refine(isHttpOrigin, 'must be an http(s) origin')
+      .transform((value) => new URL(value).origin),
+    MARKET_DATA_PROVIDER: z.enum(['fake', 'eodhd']),
+    /** Header set by a trusted reverse proxy carrying the client IP (rate limiting). Unset = ignore. */
+    TRUSTED_PROXY_HEADER: z.preprocess(
+      (value) => (value === '' ? undefined : value), // Compose passes unset vars as ''
+      z.enum(['x-forwarded-for', 'x-real-ip']).optional(),
+    ),
+  })
+  .superRefine((env, ctx) => {
+    // The session cookie is Secure (__Host-): browsers drop it on plain http except localhost,
+    // so an http production origin would silently break login.
+    if (env.NODE_ENV !== 'production') return;
+    const url = new URL(env.APP_ORIGIN);
+    if (url.protocol !== 'https:' && !LOCAL_HOSTS.has(url.hostname)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['APP_ORIGIN'],
+        message: 'must be https in production (Secure session cookie)',
+      });
+    }
+  });
 
 export type Env = z.infer<typeof envSchema>;
 

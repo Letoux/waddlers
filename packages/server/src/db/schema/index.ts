@@ -1,3 +1,3 @@
-// Business tables arrive with S2+ (users/sessions) and S3 (spaces/positions).
-// Each table lives in its own file under this directory and is re-exported here.
-export {};
+// One file per table, re-exported here. Spaces/positions arrive with S3.
+export { users, citext, type User } from './users';
+export { sessions, type Session } from './sessions';

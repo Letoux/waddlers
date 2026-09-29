@@ -34,7 +34,8 @@ services:
       timeout: 5s
       retries: 10
 
-  # One-shot: applies committed Drizzle migrations, then exits. `web` waits for it.
+  # One-shot, runs as the database OWNER: (re)creates the DML-only application role, then applies
+  # committed Drizzle migrations, then exits. `web` waits for it and never gets owner credentials.
   migrate:
     build:
       context: .
@@ -42,7 +43,8 @@ services:
       target: migrate
     profiles: ['app']
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-waddlers}
+      DATABASE_MIGRATE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-waddlers}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,10 +56,14 @@ services:
       dockerfile: Dockerfile
     profiles: ['app']
     restart: unless-stopped
-    env_file: .env
+    # Explicit allow-list: the web container must not see POSTGRES_PASSWORD, the owner URL or
+    # any other variable of the root .env.
     environment:
-      # Inside the compose network the database host is the service name.
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-waddlers}
+      # Inside the compose network the database host is the service name; app role = DML only.
+      DATABASE_URL: postgres://waddlers_app:${APP_DB_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-waddlers}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-fake}
+      TRUSTED_PROXY_HEADER: ${TRUSTED_PROXY_HEADER:-}
     ports:
       - '3000:3000'
     depends_on:

@@ -19,15 +19,17 @@ Status of each item is tracked in the fix-pass commit message.
 
 ## Must be handled in S2 (auth) — mandatory checklist
 
-- **DB roles (P2):** split superuser into a migration/owner role and an app role with DML only; separate `DATABASE_URL`s for `migrate` and `web`.
-- **CSRF invariants for cookie sessions (P2):** never enable CORS / `Access-Control-Allow-Credentials`; fail closed when a session cookie is present but both `Origin` and `Sec-Fetch-Site` are missing; login/logout/change-password go through the same RPC handler (no separate route/server action/form POST); tests for each.
-- **Server-side client (P2):** SSR/RSC must use `createRouterClient(router, { context })` under `apps/web/server/**`; `apps/web/lib/orpc.ts` stays browser-only (no hard-coded `localhost:3000`).
-- **Body size limit (P2):** `BodyLimitPlugin` (~1 MB) + 413 test before `auth.login`.
-- **Schema drift in CI (P2):** `db:generate` + `git diff --exit-code packages/server/drizzle` after `db:check`.
-- **oRPC context:** `implement(contract).$context<{ headers: Headers; resHeaders?: Headers }>()`; `ResponseHeadersPlugin` for `Set-Cookie`.
-- **Health (P3):** public endpoint liveness-only or restricted; rate-limit; throttle its log line.
-- **HTTP headers (P3):** `poweredByHeader: false`, CSP / `frame-ancestors`, `X-Content-Type-Options`, `Referrer-Policy`, HSTS.
-- **Docker (P3):** `web` gets only needed env (not the whole `.env`); `migrate` stage non-root; URL-safe/encoded DB password.
+Status after the S2 backend pass (details in `docs/ai/BACKEND.md`, "Authentication (S2)"):
+
+- **DB roles (P2): DONE.** Owner vs DML-only `waddlers_app` (`db/roles.ts`, `pnpm db:setup-roles`), separate `DATABASE_MIGRATE_URL`; Compose `migrate` runs setup then migrations; integration test proves no DDL/TRUNCATE/migration-schema access.
+- **CSRF invariants (P2): DONE.** No CORS (tested incl. preflight), fail closed on cookie without Origin/Sec-Fetch-Site, `Sec-Fetch-Site` must be `same-origin`, auth procedures use the same handler; unit + integration tests.
+- **Server-side client (P2): DONE.** `createServerClient` (`createRouterClient`) + `apps/web/server/{orpc,auth}.ts` (`getCurrentUser`); `apps/web/lib/orpc.ts` is browser-only and no longer hard-codes localhost:3000.
+- **Body size limit (P2): DONE.** `BodyLimitPlugin` 1 MB, 413 test (unit) and verified with curl.
+- **Schema drift in CI (P2): DONE.** `db:generate` + fail on any change or untracked file under `packages/server/drizzle`.
+- **oRPC context: DONE.** `$context<RpcContext>()`, `ResponseHeadersPlugin`.
+- **Health (P3): DONE.** Public `health` is liveness-only (no DB state, so no rate limit or log needed); DB probe moved to authenticated `systemStatus` with a throttled log line. Rate-limiting anonymous `health` itself is deferred (no expensive work; reverse-proxy concern).
+- **HTTP headers (P3): DONE, with a gap.** All listed headers set and tested; CSP keeps `script-src 'unsafe-inline'` (Next inline bootstrap). Nonce-based CSP deferred to S10.
+- **Docker (P3): DONE.** `web` gets an explicit env allow-list; `migrate` stage non-root (verified: `uid=1000`, run against the dev DB); URL-safe DB passwords enforced by `setup-roles`.
 
 ## Deferred / accepted
 

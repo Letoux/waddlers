@@ -5,9 +5,15 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "admin": "tsx --env-file-if-exists=../../.env src/admin.ts",
+    "db:seed": "tsx --env-file-if-exists=../../.env src/seed.ts"
   },
   "devDependencies": {
-    "tsx": "^4.23.15"
+    "tsx": "^4.23.15",
+    "@types/node": "^26.6.3"
+  },
+  "dependencies": {
+    "@waddlers/server": "workspace:*"
   }
 }
