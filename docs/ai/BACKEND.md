@@ -115,7 +115,7 @@ pnpm admin -- user:disable alice           # disables, revokes all sessions (ide
 printf '%s\n' "$PASSWORD" | pnpm admin -- user:create alice   # non-interactive: first stdin line
 ```
 
-The password is read only from the hidden prompt or stdin, never argv (extra arguments, including `--password`, are refused) and never from the environment. Uses `DATABASE_URL` (app role). `pnpm db:seed` creates `SEED_USER_USERNAME` (default `dev`) with `SEED_USER_PASSWORD` if absent (existing users are untouched), and exits non-zero when `NODE_ENV=production`, or, unless `ALLOW_DEV_SEED=1`, when `APP_ORIGIN` is not localhost or the `DATABASE_URL` host is not local (`localhost`, `127.0.0.1`, `::1`, `postgres`). Spaces (`space:create`, `space:grant`) arrive in S3.
+The password is read only from the hidden prompt or stdin, never argv (extra arguments, including `--password`, are refused) and never from the environment. Uses `DATABASE_URL` (app role). `pnpm db:seed` creates `SEED_USER_USERNAME` (default `dev`) with `SEED_USER_PASSWORD` if absent (existing users are untouched), and exits non-zero when `NODE_ENV=production`, or, unless `ALLOW_DEV_SEED=1`, when `APP_ORIGIN` is not localhost or the `DATABASE_URL` host is not local (`localhost`, `127.0.0.1`, `::1`, `postgres`). Spaces and positions: see the S3 section below.
 
 ### What the frontend should call
 
@@ -130,3 +130,81 @@ The password is read only from the hidden prompt or stdin, never argv (extra arg
 ### Code layout notes
 
 `auth/users.ts` is the users repository (used by the auth service and the admin module); `AdminError` lives in `admin/errors.ts` (no import cycle between `admin/index.ts` and `admin/cli.ts`/`seed.ts`). Node >= 22.9 is required (`--env-file-if-exists`).
+
+## Spaces & positions (S3)
+
+Spec: specs 2, 7, 9, 33, 35, 40. Decisions D7-D11, D17 and the S3 orchestrator decisions below.
+
+### Decisions recorded for S3
+
+- **Spaces are created and managed by the admin only** (specs 7; D17 defaulted): no create/rename/delete procedure for users. Admin CLI below. Space names are unique (citext) so the CLI can address them.
+- **Roles (D10)**, per membership (`owner` | `editor` | `viewer`, text + CHECK): `owner` and `editor` change quantities and remove positions; `viewer` is read-only. Owner has no extra power over editor in S3 (owner-only actions can come later).
+- **Positions**: listing chosen per space (D8) with a `selection_reason` (specs 35, nullable, never invented), `quantity numeric(24,8) NULL` (D9: null = watchlist entry, never coerced to 0), `quantity >= 0` and not NaN (CHECK), unique(space, instrument). In S3 positions are added by the dev seed or `position:add`; the user-facing add form ships after the S4 search (D11). Users can remove a position (owner/editor).
+- Active space: `users.last_space_id` (advisory), URLs `/s/[spaceId]/...`.
+
+### Schema and migration impact
+
+`0002_spaces_positions.sql`: purely additive (new tables + one nullable column `users.last_space_id`); no destructive statement, no backfill, safe on a populated database. The app role gets DML on the new tables through the existing default privileges (proved in `auth/app-role.int.test.ts`).
+
+- Global reference data: `exchanges` (`mic` pk, name, timezone, country), `instruments` (id, `type` stock|etf, name, `isin` unique nullable, sector, description, timestamps), `listings` (id, instrument, exchange, `symbol`, `currency` = the provider's RAW quote currency incl. `GBX`/`GBp`/`ZAc`; unique(exchange, symbol); unique(id, instrument) as FK target; index on instrument), `listing_provider_ids` (listing, `provider`, `provider_symbol`; unique(listing, provider) and unique(provider, provider_symbol)). Major-currency handling is derived at read time with `normalizeCurrency` (`@waddlers/domain`), never stored. No market-data tables yet (S4 persistence).
+- Per-space: `spaces` (id, `name` citext unique, `reference_currency` default `EUR`, timestamps), `space_members` (pk (space, user), `role`; index on user), `space_positions` (id, space, instrument, listing, `selection_reason`, `quantity`, timestamps). A composite FK (listing, instrument) -> `listings(id, instrument_id)` guarantees a position's listing belongs to its instrument.
+- Deletion: deleting a space cascades members and positions and nulls `users.last_space_id`; deleting a user cascades memberships; instruments, listings and exchanges are RESTRICTed while referenced.
+- Numbers: PostgreSQL `numeric` <-> decimal string (Drizzle) <-> `Decimal` (domain, when computing). The API returns canonical strings without trailing zeros (`12.5`, not `12.50000000`; `canonicalQuantity`).
+
+### Authorization core (security heart of S3)
+
+`packages/server/src/spaces/access.ts`:
+
+- `requireSpaceAccess({ db, userId }, spaceId, minRole)` is the ONLY producer of the branded `AuthorizedSpace` (`{ id, role, userId }`). Every repository function that touches per-space data (`spaces/repository.ts`: positions, space details, active space) takes an `AuthorizedSpace`, so a missing access check is a compile error (`spaces/access.test.ts` has `@ts-expect-error` cases; `tsc` fails if they start to compile). A cast can still forge it: reject `as AuthorizedSpace` in review.
+- Space-scoped procedures are built from `spaceScoped(minRole)` in `router.ts` (`authed` + access check on `input.spaceId`, adds `context.space`). It runs **before input validation**: an inaccessible/nonexistent space is `NOT_FOUND` and a too-low role `FORBIDDEN` regardless of the rest of the payload. A malformed `spaceId` is also `NOT_FOUND` (it never reaches SQL).
+- Outcomes: unauthenticated or disabled user -> `UNAUTHORIZED`; not a member (including a member of other spaces only) or nonexistent space -> `NOT_FOUND` with an identical body (never FORBIDDEN, so existence is not confirmed); member with too low a role -> `FORBIDDEN`; a position id from another space with an accessible `spaceId` -> `NOT_FOUND` (row ids are resolved with `space_id = <authorized space>` inside the same statement, no fetch by id alone).
+- `operatorSpaceAccess(spaceId)` mints an access with role owner and `userId: null` for the admin CLI and dev seed (operator = database owner of the deployment). It must never be called from a request path.
+- The IDOR matrix (`spaces/idor-matrix.int.test.ts`) is data-driven: every space-scoped procedure x {anonymous, disabled user, non-member, member of another space, viewer, editor, owner, nonexistent/malformed space id, foreign position id, garbage payload}, checking the outcome and that denied calls leave the data untouched. A test enumerates the contract and fails when a procedure taking `spaceId` (or any new `spaces.*`/`positions.*` procedure) is not in the matrix.
+
+### Procedures (all authed; contract in `@waddlers/contracts`)
+
+| Procedure | Min role | Result |
+|---|---|---|
+| `spaces.list()` | any user | `{ spaces: [{ id, name, referenceCurrency, role, positionCount }], activeSpaceId }`, only the caller's spaces, by name. `activeSpaceId` = last active space if still accessible, else the first by name, else `null` |
+| `spaces.get({ spaceId })` | viewer | one summary (same shape) |
+| `spaces.setActive({ spaceId })` | viewer | `{ activeSpaceId }`; stores `users.last_space_id` (idempotent) |
+| `positions.list({ spaceId })` | viewer | `{ rows, total, truncated }` |
+| `positions.setQuantity({ spaceId, positionId, quantity })` | editor | `{ positionId, quantity }`; idempotent; `quantity: null` = watchlist |
+| `positions.remove({ spaceId, positionId })` | editor | `{ ok: true }`; a second call is `NOT_FOUND` |
+
+`positions.list` rows: `{ id, quantity: string|null, selectionReason: string|null, addedAt, instrument: { id, name, type, isin }, listing: { id, symbol, exchange: { mic, name }, currency (raw, may be GBX), currencyMajor (GBP) | null, minorUnitDivisor (100) | null } }`. **No prices, values or performance** (S4/S6 add them; nothing is invented). Sorted by instrument name (case-insensitive) then id. Capped at `POSITIONS_LIST_MAX = 1000` rows (`truncated` tells; server pagination, sort and filter arrive in S6). No provider call and no cache involved: this data is PostgreSQL only, so there is no TTL to document.
+
+Quantity input (`quantitySchema`, reuse it in forms): a plain decimal string `^(0|[1-9]\d{0,15})(\.\d{1,8})?$`, i.e. non-negative, at most 16 integer and 8 fraction digits, matching `numeric(24,8)`. Rejected: exponent (`1e3`), thousands separators (`1 000`, `1,000`), decimal comma (`1,5`), signs, `NaN`, blanks/padding, leading/trailing dot, leading zeros (`007`), JS numbers. The empty string is invalid (the UI must send `null` for "no quantity"). `0` is valid and different from `null`.
+
+Error codes for the UI (French messages): `UNAUTHORIZED` (redirect to login), `NOT_FOUND` (space/position unavailable: go back to the space list; also what a revoked space looks like), `FORBIDDEN` (read-only role: hide/disable edit controls using the `role` from `spaces.list`), `BAD_REQUEST` (input; never render raw issues).
+
+### What the frontend should call
+
+- App shell: `orpc.spaces.list` gives the selector content, the role per space and the default `activeSpaceId`. On `/` redirect to `/s/<activeSpaceId>/...` (or an empty state when `null`: the user has no space, ask the admin). Selecting a space: navigate to `/s/<id>/...` and fire `spaces.setActive` (a failure must not block navigation). Use `spaces.get` in a server component to validate `[spaceId]` (`NOT_FOUND` -> `notFound()`).
+- Table: `positions.list`, edit with `positions.setQuantity` (show controls only for `owner`/`editor`), delete with `positions.remove`. Render `—` for `quantity === null` and when a value is unavailable; never turn null into 0. Show `currency`; do not divide GBX yourself, S4 will provide converted values (`currencyMajor`/`minorUnitDivisor` are metadata).
+- After a mutation invalidate the `positions.list` and `spaces.list` queries (position count).
+- Pages must read data only through authed oRPC procedures (FRONTEND.md); every `/s/[spaceId]/...` page calls `requireUser()` and the procedure re-checks access.
+
+### Admin CLI (spaces)
+
+```bash
+pnpm admin -- space:create "PEA"                        # reference currency EUR (D7)
+pnpm admin -- space:rename "PEA" "PEA Bourse"
+pnpm admin -- space:grant "PEA" alice owner             # owner|editor|viewer; repeating changes the role
+pnpm admin -- space:revoke "PEA" alice                  # idempotent
+pnpm admin -- space:list                                # id, name, member and position counts
+pnpm admin -- position:add "PEA" AI.XPAR 10.5           # <symbol>.<MIC> [quantity]; no quantity = watchlist
+```
+
+Space arguments are names (quote them). `position:add` needs the instrument/listing to exist in the reference data (loaded by the dev seed; loading real reference data comes with the S4 search, D11): unknown listing, invalid quantity, or an instrument already tracked in the space (also with another listing) is an error and changes nothing. Symbols may contain dots: the MIC is what follows the last dot.
+
+### Dev seed
+
+`pnpm db:seed` (same production/local-host guards as S2) now also creates, idempotently by natural keys and without overwriting existing rows (edited quantities and roles survive; the password of an existing dev user is untouched and `SEED_USER_PASSWORD` is only needed when the user must be created): exchanges XPAR/XNAS/XNYS/XETR/XLON; 10 instruments and listings (one ETF: Amundi MSCI World `CW8`; one GBX listing: Shell on XLON; provider ids `eodhd` such as `AI.PA`, NOT yet verified against EODHD); spaces **PEA** (dev is owner, 6 positions including a watchlist entry with `null` quantity), **Actions US** (dev is viewer, 4 positions) and **Famille** (dev has NO access, for manual IDOR checks). The seed prints the space ids. A position the user deleted comes back on re-seed.
+
+### Tests (S3)
+
+Unit: `spaces/quantity.test.ts` (schema table + canonical form), `spaces/access.test.ts` (compile-time guarantee, role order, malformed ids never reach the database), CLI arity/validation in `admin/admin-unit.test.ts`, guard enumeration. Integration: `spaces/idor-matrix.int.test.ts`, `spaces/spaces.int.test.ts` (lists, active space, decimal round trips incl. beyond `MAX_SAFE_INTEGER`, watchlist null, cap, CHECK/FK/cascade behaviour), `admin/spaces.int.test.ts` (CLI commands, seed idempotence and guards), app-role smoke extended with seed, CLI and procedures.
+
+Gotcha found while testing: Drizzle renders `${table.col}` unqualified in a single-table `select`, so a correlated subquery written with it silently binds to the inner table. The count subqueries in `spaces/repository.ts` and `admin/spaces.ts` use literal, qualified SQL for that reason.
+

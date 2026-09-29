@@ -1,5 +1,5 @@
 // Dev seed: `pnpm db:seed` (needs SEED_USER_PASSWORD; refuses NODE_ENV=production).
-import { AdminError, createDatabase, seedDevUser } from '@waddlers/server/admin';
+import { AdminError, createDatabase, seedDevWorkspace } from '@waddlers/server/admin';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -9,8 +9,13 @@ if (!url) {
 
 const { db, sql } = createDatabase(url, { max: 1 });
 try {
-  const result = await seedDevUser(db, process.env);
-  console.log(`Seed user "${result.username}": ${result.status}.`);
+  const result = await seedDevWorkspace(db, process.env);
+  console.log(`Seed user "${result.user.username}": ${result.user.status}.`);
+  for (const space of result.spaces) {
+    console.log(
+      `Space "${space.name}" (${space.id}): ${space.access ? `you are ${space.access}` : 'NO access (IDOR check)'}.`,
+    );
+  }
 } catch (error) {
   console.error(error instanceof AdminError ? error.message : 'Seed failed.');
   process.exitCode = 1;

@@ -1,6 +1,6 @@
 # Waddlers — MVP implementation plan
 
-Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1, S2, S4 domain module** (decisions: `docs/ai/BACKEND.md`, `docs/ai/FRONTEND.md`, `docs/ai/DOMAIN.md`; reviews: `docs/ai/REVIEW-S1.md`, `docs/ai/REVIEW-S2.md`).
+Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1, S2, S3 backend (frontend pending), S4 domain module** (decisions: `docs/ai/BACKEND.md`, `docs/ai/FRONTEND.md`, `docs/ai/DOMAIN.md`; reviews: `docs/ai/REVIEW-S1.md`, `docs/ai/REVIEW-S2.md`).
 Source of truth remains `specs.md`; this file records the agreed decomposition and design.
 
 ## 1. Objective

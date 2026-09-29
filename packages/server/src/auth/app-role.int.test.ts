@@ -1,10 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { createUser, disableUser } from '../admin';
+import { createSpace, createUser, disableUser, grantSpace, addPosition } from '../admin';
+import { seedDevWorkspace } from '../admin/seed';
 import { closeDb, getDb } from '../db/client';
 import { setupAppRole } from '../db/roles';
 import { resetEnvCache } from '../env';
-import { users } from '../db/schema';
+import { spaces, users } from '../db/schema';
 import { createApp, ORIGIN, PASSWORD, TEST_AUTH_SECRET } from '../../test/auth-harness';
 
 const ROLE = 'waddlers_app_it';
@@ -26,7 +27,8 @@ describe('auth flow as the DML-only app role', () => {
     resetEnvCache();
   });
   afterAll(async () => {
-    await getDb().delete(users); // DML only: no truncate
+    await getDb().delete(spaces); // DML only: no truncate (cascades members/positions)
+    await getDb().delete(users);
     await closeDb();
     vi.unstubAllEnvs();
     resetEnvCache();
@@ -56,5 +58,45 @@ describe('auth flow as the DML-only app role', () => {
       (await rpc('auth.login', { username: 'roleuser', password: 'a brand new passphrase 1' }))
         .status,
     ).toBe(401);
+  });
+
+  it('spaces and positions: seed, admin commands and the space procedures run with DML only', async () => {
+    await createUser(getDb(), { username: 'spaceuser', password: PASSWORD });
+    const seeded = await seedDevWorkspace(getDb(), {
+      NODE_ENV: 'development',
+      APP_ORIGIN: ORIGIN,
+      DATABASE_URL: 'postgres://localhost/x',
+      SEED_USER_USERNAME: 'spaceuser',
+    });
+    expect(seeded.spaces).toHaveLength(3);
+    await createSpace(getDb(), { name: 'Extra' });
+    await grantSpace(getDb(), { space: 'Extra', username: 'spaceuser', role: 'editor' });
+    await addPosition(getDb(), { space: 'Extra', listing: 'AI.XPAR', quantity: '2.5' });
+
+    const { rpc, loginAs } = createApp();
+    const cookie = await loginAs('spaceuser');
+    const list = (await rpc('spaces.list', undefined, { cookie })).json as unknown as {
+      spaces: { id: string; name: string }[];
+    };
+    const extra = list.spaces.find((s) => s.name === 'Extra')!;
+    expect((await rpc('spaces.setActive', { spaceId: extra.id }, { cookie })).status).toBe(200);
+    const positions = (await rpc('positions.list', { spaceId: extra.id }, { cookie }))
+      .json as unknown as {
+      rows: { id: string; quantity: string }[];
+    };
+    const row = positions.rows[0]!;
+    expect(row.quantity).toBe('2.5');
+    expect(
+      (
+        await rpc(
+          'positions.setQuantity',
+          { spaceId: extra.id, positionId: row.id, quantity: '3.25' },
+          { cookie },
+        )
+      ).json,
+    ).toEqual({ positionId: row.id, quantity: '3.25' });
+    expect(
+      (await rpc('positions.remove', { spaceId: extra.id, positionId: row.id }, { cookie })).status,
+    ).toBe(200);
   });
 });

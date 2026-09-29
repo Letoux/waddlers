@@ -41,6 +41,12 @@ describe('authentication guard', () => {
         'auth.logout',
         'auth.me',
         'auth.changePassword',
+        'spaces.list',
+        'spaces.get',
+        'spaces.setActive',
+        'positions.list',
+        'positions.setQuantity',
+        'positions.remove',
       ]),
     );
   });

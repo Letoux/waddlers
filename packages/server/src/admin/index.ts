@@ -10,7 +10,16 @@ export { pgErrorCode } from '../db/errors';
 export { AdminError } from './errors';
 export { runAdminCli, USAGE, type CliIo } from './cli';
 export { readSecret } from './prompt';
-export { seedDevUser } from './seed';
+export { seedDevUser, seedDevWorkspace } from './seed';
+export {
+  addPosition,
+  createSpace,
+  grantSpace,
+  listAllSpaces,
+  parseListingRef,
+  renameSpace,
+  revokeSpace,
+} from './spaces';
 
 function parseUsername(raw: string): string {
   const result = usernameSchema.safeParse(raw);

@@ -23,9 +23,12 @@ export async function releaseTestEnv(): Promise<void> {
   resetEnvCache();
 }
 
-/** users -> sessions cascade. Tests share one database and run serially. */
+/**
+ * Empties users (and, by cascade, sessions, memberships) and all space/reference tables.
+ * Tests share one database and run serially.
+ */
 export async function resetAuthTables(): Promise<void> {
-  await getDb().execute(sql`truncate table users cascade`);
+  await getDb().execute(sql`truncate table users, spaces, instruments, exchanges cascade`);
 }
 
 export interface RpcResult {

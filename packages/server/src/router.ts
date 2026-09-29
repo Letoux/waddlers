@@ -1,6 +1,16 @@
 import { implement, ORPCError } from '@orpc/server';
 import { contract } from '@waddlers/contracts';
 import { sql } from 'drizzle-orm';
+import type { SpaceRole } from '@waddlers/contracts';
+import { requireSpaceAccess } from './spaces/access';
+import {
+  getSpace,
+  listSpacePositions,
+  listSpaces,
+  removeSpacePosition,
+  setActiveSpace,
+  setPositionQuantity,
+} from './spaces/service';
 import { authenticate, changePassword, login, logout, type AuthDeps } from './auth/service';
 import type { ResolvedSession } from './auth/sessions';
 import { warmDummyHash } from './auth/password';
@@ -104,6 +114,24 @@ export function createRouter({
     return next({ context: { session } });
   });
 
+  /**
+   * Space-scoped procedures: `authed` plus an access check on `input.spaceId`, adding
+   * `context.space` (a branded `AuthorizedSpace`). Runs BEFORE input validation, so an
+   * inaccessible/nonexistent space answers NOT_FOUND and a too-low role FORBIDDEN whatever the rest
+   * of the input looks like. The set of procedures taking `spaceId` is enforced by the IDOR matrix
+   * test, which enumerates the contract.
+   */
+  const spaceScoped = (minRole: SpaceRole) =>
+    authed.use(async ({ context, next }, input) => {
+      const spaceId = (input as { spaceId?: unknown } | null | undefined)?.spaceId;
+      const space = await requireSpaceAccess(
+        { db: deps.getDb(), userId: context.session.user.id },
+        spaceId,
+        minRole,
+      );
+      return next({ context: { space } });
+    });
+
   let lastDbLog = 0;
 
   return os.router({
@@ -128,6 +156,28 @@ export function createRouter({
         time: now().toISOString(),
       };
     }),
+    spaces: {
+      list: authed.spaces.list.handler(({ context }) =>
+        listSpaces(deps.getDb(), context.session.user.id),
+      ),
+      get: spaceScoped('viewer').spaces.get.handler(({ context }) =>
+        getSpace(deps.getDb(), context.space),
+      ),
+      setActive: spaceScoped('viewer').spaces.setActive.handler(({ context }) =>
+        setActiveSpace(deps.getDb(), context.space),
+      ),
+    },
+    positions: {
+      list: spaceScoped('viewer').positions.list.handler(({ context }) =>
+        listSpacePositions(deps.getDb(), context.space),
+      ),
+      setQuantity: spaceScoped('editor').positions.setQuantity.handler(({ context, input }) =>
+        setPositionQuantity(deps.getDb(), context.space, input.positionId, input.quantity),
+      ),
+      remove: spaceScoped('editor').positions.remove.handler(({ context, input }) =>
+        removeSpacePosition(deps.getDb(), context.space, input.positionId),
+      ),
+    },
     auth: {
       login: os.auth.login.handler(({ context, input, errors }) =>
         login(deps, context, input, errors),

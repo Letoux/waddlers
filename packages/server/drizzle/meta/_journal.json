@@ -15,6 +15,13 @@
       "when": 1790709576720,
       "tag": "0001_auth_users_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790712999562,
+      "tag": "0002_spaces_positions",
+      "breakpoints": true
     }
   ]
 }

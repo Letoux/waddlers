@@ -2,6 +2,7 @@ import { Readable, Writable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { Database } from '../db/create';
 import { runAdminCli, type CliIo } from './cli';
+import { parseListingRef } from './spaces';
 import { readSecret } from './prompt';
 import { seedDevUser } from './seed';
 
@@ -27,6 +28,18 @@ const noDb = new Proxy(
   },
 ) as unknown as Database;
 
+function io() {
+  const out = sink();
+  const err = sink();
+  const cliIo: CliIo = {
+    out: out.stream,
+    err: err.stream,
+    readSecret: vi.fn<CliIo['readSecret']>(),
+    interactive: false,
+  };
+  return { cliIo, readSecret: cliIo.readSecret as ReturnType<typeof vi.fn>, out, err };
+}
+
 describe('readSecret (non-interactive)', () => {
   it('reads the first stdin line, without the newline', async () => {
     const input = Readable.from(['s3cret-pass-phrase\nignored\n']);
@@ -46,18 +59,6 @@ describe('readSecret (non-interactive)', () => {
 });
 
 describe('admin CLI argument handling', () => {
-  function io() {
-    const out = sink();
-    const err = sink();
-    const cliIo: CliIo = {
-      out: out.stream,
-      err: err.stream,
-      readSecret: vi.fn<CliIo['readSecret']>(),
-      interactive: false,
-    };
-    return { cliIo, readSecret: cliIo.readSecret as ReturnType<typeof vi.fn>, out, err };
-  }
-
   it('prints usage and exits 1 without a command or username', async () => {
     const i = io();
     expect(await runAdminCli([], noDb, i.cliIo)).toBe(1);
@@ -101,9 +102,12 @@ describe('dev seed', () => {
     ).rejects.toThrow(/production/);
   });
 
-  it('requires SEED_USER_PASSWORD', async () => {
+  it('requires SEED_USER_PASSWORD when the user has to be created', async () => {
+    const dbWithoutUser = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) }),
+    } as unknown as Database;
     await expect(
-      seedDevUser(noDb, {
+      seedDevUser(dbWithoutUser, {
         NODE_ENV: 'development',
         APP_ORIGIN: 'http://localhost:3000',
         DATABASE_URL: LOCAL_DB,
@@ -151,5 +155,44 @@ describe('dev seed', () => {
         ALLOW_DEV_SEED: '1',
       }),
     ).rejects.toThrow(/db touched/);
+  });
+});
+
+describe('space commands (argument handling, no database)', () => {
+  it.each([
+    [['space:create']],
+    [['space:create', 'a', 'b']],
+    [['space:rename', 'a']],
+    [['space:grant', 'a', 'bob']],
+    [['space:grant', 'a', 'bob', 'owner', 'x']],
+    [['space:revoke', 'a']],
+    [['space:list', 'x']],
+    [['position:add', 'a']],
+    [['position:add', 'a', 'AI.XPAR', '1', 'extra']],
+    [['position:add', 'a', 'AI.XPAR', '--quantity=1']],
+  ])('%j prints usage and exits 1', async (argv) => {
+    const i = io();
+    expect(await runAdminCli(argv, noDb, i.cliIo)).toBe(1);
+    expect(i.err.text()).toContain('Usage');
+  });
+
+  it('rejects bad input before touching the database', async () => {
+    const i = io();
+    expect(await runAdminCli(['space:create', '   '], noDb, i.cliIo)).toBe(1);
+    expect(i.err.text()).toContain('Invalid space name');
+    expect(await runAdminCli(['space:grant', 'PEA', 'alice', 'admin'], noDb, i.cliIo)).toBe(1);
+    expect(i.err.text()).toContain('Invalid role');
+    expect(await runAdminCli(['position:add', 'PEA', 'AI'], noDb, i.cliIo)).toBe(1);
+    expect(i.err.text()).toContain('Invalid listing');
+  });
+});
+
+describe('parseListingRef', () => {
+  it('splits at the last dot and upper-cases the MIC', () => {
+    expect(parseListingRef('AI.XPAR')).toEqual({ symbol: 'AI', mic: 'XPAR' });
+    expect(parseListingRef('BRK.B.xnys')).toEqual({ symbol: 'BRK.B', mic: 'XNYS' });
+  });
+  it.each(['AI', '.XPAR', 'AI.', 'AI.PA', 'AI.XPARX', ''])('rejects %j', (bad) => {
+    expect(() => parseListingRef(bad)).toThrow(/Invalid listing/);
   });
 });

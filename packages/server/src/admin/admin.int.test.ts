@@ -148,14 +148,14 @@ describe('dev seed', () => {
       SEED_USER_PASSWORD: PASSWORD,
       SEED_USER_USERNAME: 'devuser',
     };
-    expect(await seedDevUser(getDb(), env)).toEqual({ status: 'created', username: 'devuser' });
+    expect(await seedDevUser(getDb(), env)).toMatchObject({
+      status: 'created',
+      username: 'devuser',
+    });
     const [before] = await getDb().select().from(users);
     expect(
       await seedDevUser(getDb(), { ...env, SEED_USER_PASSWORD: 'a different passphrase' }),
-    ).toEqual({
-      status: 'exists',
-      username: 'devuser',
-    });
+    ).toMatchObject({ status: 'exists', username: 'devuser' });
     const [after] = await getDb().select().from(users);
     expect(after?.passwordHash).toBe(before?.passwordHash);
     expect(await verifyPassword(after!.passwordHash, PASSWORD)).toBe(true);

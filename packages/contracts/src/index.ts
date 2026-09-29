@@ -73,6 +73,107 @@ export type ChangePasswordInput = z.infer<typeof changePasswordInputSchema>;
 export const sessionOutputSchema = z.object({ user: currentUserSchema });
 export type SessionOutput = z.infer<typeof sessionOutputSchema>;
 
+// --- spaces & positions (S3) ---
+
+export const SPACE_ROLES = ['owner', 'editor', 'viewer'] as const;
+export const spaceRoleSchema = z.enum(SPACE_ROLES);
+export type SpaceRole = z.infer<typeof spaceRoleSchema>;
+
+/** Roles allowed to change quantities and remove positions. `viewer` is read-only. */
+export const SPACE_WRITER_ROLES = ['owner', 'editor'] as const satisfies readonly SpaceRole[];
+
+/** Numeric column of `space_positions.quantity`: numeric(24, 8). */
+export const QUANTITY_MAX_INTEGER_DIGITS = 16;
+export const QUANTITY_MAX_FRACTION_DIGITS = 8;
+
+/**
+ * Non-negative plain decimal string, bounded like the column (at most 16 integer digits and 8
+ * fraction digits). Rejects exponents, thousands separators, signs, blanks, `NaN`, a leading
+ * dot/trailing dot and superfluous leading zeros. Numbers are never accepted (floats).
+ */
+export const quantitySchema = z
+  .string()
+  .regex(
+    new RegExp(
+      `^(0|[1-9][0-9]{0,${QUANTITY_MAX_INTEGER_DIGITS - 1}})(\\.[0-9]{1,${QUANTITY_MAX_FRACTION_DIGITS}})?$`,
+    ),
+    'Quantité invalide : nombre positif ou nul, au plus 16 chiffres avant et 8 après la virgule (séparateur « . »).',
+  );
+
+/** `null` = watchlist entry (no quantity), never 0. */
+export const nullableQuantitySchema = quantitySchema.nullable();
+
+export const spaceIdInputSchema = z.object({ spaceId: z.uuid() });
+
+export const spaceSummarySchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  /** ISO 4217 major currency (EUR only in the MVP, D7). */
+  referenceCurrency: z.string(),
+  /** The caller's role in this space. */
+  role: spaceRoleSchema,
+  positionCount: z.number().int().min(0),
+});
+export type SpaceSummary = z.infer<typeof spaceSummarySchema>;
+
+export const spacesListOutputSchema = z.object({
+  spaces: z.array(spaceSummarySchema),
+  /**
+   * The space to open by default: the user's last active space if still accessible, otherwise
+   * the first accessible space by name; `null` when the user has no space.
+   */
+  activeSpaceId: z.uuid().nullable(),
+});
+export type SpacesListOutput = z.infer<typeof spacesListOutputSchema>;
+
+export const positionRowSchema = z.object({
+  id: z.uuid(),
+  /** Decimal string (no exponent), `null` = watchlist entry. */
+  quantity: z.string().nullable(),
+  /** Why this listing was retained (specs 35); `null` when not recorded. */
+  selectionReason: z.string().nullable(),
+  addedAt: z.iso.datetime(),
+  instrument: z.object({
+    id: z.uuid(),
+    name: z.string(),
+    type: z.enum(['stock', 'etf']),
+    isin: z.string().nullable(),
+  }),
+  listing: z.object({
+    id: z.uuid(),
+    symbol: z.string(),
+    exchange: z.object({ mic: z.string(), name: z.string() }),
+    /** Provider's raw quote currency (may be a minor unit such as `GBX`). */
+    currency: z.string(),
+    /** Major currency of `currency` (`GBX` -> `GBP`); `null` when the code is not recognised. */
+    currencyMajor: z.string().nullable(),
+    /** Minor units per major unit (100 for `GBX`, 1 otherwise); `null` when not recognised. */
+    minorUnitDivisor: z.number().int().positive().nullable(),
+  }),
+});
+export type PositionRow = z.infer<typeof positionRowSchema>;
+
+/** `positions.list` returns at most this many rows (S6 adds server pagination). */
+export const POSITIONS_LIST_MAX = 1000;
+
+export const positionsListOutputSchema = z.object({
+  rows: z.array(positionRowSchema),
+  /** Total positions in the space (may exceed `rows.length`). */
+  total: z.number().int().min(0),
+  /** True when `total` exceeds the cap and `rows` is cut. */
+  truncated: z.boolean(),
+});
+export type PositionsListOutput = z.infer<typeof positionsListOutputSchema>;
+
+export const setQuantityInputSchema = z.object({
+  spaceId: z.uuid(),
+  positionId: z.uuid(),
+  quantity: nullableQuantitySchema,
+});
+export type SetQuantityInput = z.infer<typeof setQuantityInputSchema>;
+
+export const removePositionInputSchema = z.object({ spaceId: z.uuid(), positionId: z.uuid() });
+
 /** Typed 429 for login/changePassword; also sent as a `Retry-After` header. */
 export const tooManyRequestsError = {
   status: 429,
@@ -85,7 +186,10 @@ export const tooManyRequestsError = {
  * - UNAUTHORIZED: bad credentials (login) or no/expired session (everything else);
  * - TOO_MANY_REQUESTS: login/changePassword throttled (retry later);
  * - INVALID_CURRENT_PASSWORD: changePassword with a wrong current password (session stays valid);
- * - BAD_REQUEST: input failed validation (never render `message`/`issues` raw).
+ * - BAD_REQUEST: input failed validation (never render `message`/`issues` raw);
+ * - NOT_FOUND: space-scoped procedures, for a space the caller cannot access AND for a space or
+ *   position that does not exist (indistinguishable on purpose);
+ * - FORBIDDEN: the caller can access the space but their role is too low (viewer writing).
  */
 export const contract = {
   health: oc.input(z.undefined()).output(healthOutputSchema),
@@ -104,6 +208,23 @@ export const contract = {
         INVALID_CURRENT_PASSWORD: { status: 400, message: 'Invalid current password' },
         TOO_MANY_REQUESTS: tooManyRequestsError,
       }),
+  },
+  spaces: {
+    /** Spaces the caller belongs to (never others), with role and position count. */
+    list: oc.input(z.undefined()).output(spacesListOutputSchema),
+    /** Any accessible space; NOT_FOUND otherwise. */
+    get: oc.input(spaceIdInputSchema).output(spaceSummarySchema),
+    /** Remembers the space as the caller's active one (access-checked). */
+    setActive: oc.input(spaceIdInputSchema).output(z.object({ activeSpaceId: z.uuid() })),
+  },
+  positions: {
+    list: oc.input(spaceIdInputSchema).output(positionsListOutputSchema),
+    /** owner/editor only. `quantity: null` turns the entry into a watchlist entry. */
+    setQuantity: oc
+      .input(setQuantityInputSchema)
+      .output(z.object({ positionId: z.uuid(), quantity: z.string().nullable() })),
+    /** owner/editor only. NOT_FOUND when the position is not in that space (also when already removed). */
+    remove: oc.input(removePositionInputSchema).output(z.object({ ok: z.literal(true) })),
   },
 };
 
