@@ -1,6 +1,6 @@
 # Waddlers — MVP implementation plan
 
-Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1, S2, S3, S4 domain module** (decisions: `docs/ai/BACKEND.md`, `docs/ai/FRONTEND.md`, `docs/ai/DOMAIN.md`; reviews: `docs/ai/REVIEW-S1.md`, `docs/ai/REVIEW-S2.md`, `docs/ai/REVIEW-S3.md`).
+Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1, S2, S3, S4 (EODHD adapter pending D1 checks)** (decisions: `docs/ai/BACKEND.md`, `docs/ai/FRONTEND.md`, `docs/ai/DOMAIN.md`; reviews: `docs/ai/REVIEW-S1.md` … `docs/ai/REVIEW-S4.md`; market data: `docs/ai/MARKET-DATA.md`).
 Source of truth remains `specs.md`; this file records the agreed decomposition and design.
 
 ## 1. Objective
@@ -163,4 +163,4 @@ Non-blocking (can default and revisit):
 
 ## 8. Recommended next step
 
-`/implement` **S4 persistence & market-data service** — provider interface + fake provider, price/quote/FX/fetch-state tables (reference `listings(id)` ON DELETE CASCADE), MarketDataService (TTL, SWR, single-flight, backoff), `listing_metrics`, worker; security review for provider credentials. Rules carried over: pages call `requireUser()` and read data only through authed oRPC procedures (`docs/ai/FRONTEND.md`); every new procedure is classified public/user/space (`test/procedure-classification.ts`). Carry-overs for S5: surface `invalidPositions` and `leadingMissing` from the history series (`docs/ai/DOMAIN.md`). Open P3s: `docs/ai/REVIEW-S2.md`, `docs/ai/REVIEW-S3.md`.
+`/implement` **S5** (dashboard: summary/history/movers procedures reading Postgres via MarketDataService / `listing_metrics`, period in URL, value card, Recharts chart, movers; surface `invalidPositions`, `leadingMissing`, freshness/`asOf`) and **S6** (server-side table over `listing_metrics`; validate indexes with EXPLAIN; fix REVIEW-S4 R1/R3 first). S5 and S6 can run in isolated worktrees. The EODHD adapter needs the user's ticker list and plan tier (D1) and its own security review (`docs/ai/MARKET-DATA.md` checklist). Rules: pages call `requireUser()`, data only through authed procedures, every new procedure classified (`test/procedure-classification.ts`). Open P3s: `docs/ai/REVIEW-S2.md` … `REVIEW-S4.md`.

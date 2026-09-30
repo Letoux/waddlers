@@ -47,3 +47,17 @@ Decision recorded with this pass: **D21** (end price: the official close for a d
 - **Quote chunking** and **split worker DB role:** see above.
 - **Partial indexes on `listing_metrics`:** validate with `EXPLAIN` on realistic data in S6.
 - **Float noise from providers:** a price such as `183.45000000000002` is rejected (more than 8 decimals) instead of rounded; the adapter must format numbers before returning them.
+
+## Targeted re-review and re-audit (0281411) — verdict: approve
+
+All review P2s and audit findings confirmed fixed or deferred with a reason; no regressions. D21 implementation confirmed (`selectEndPrice`: the quote wins only when its date is after the latest close). Bounded metrics window confirmed equivalent to the unbounded computation. Dropping values that do not fit the column scale accepted; the EODHD adapter must round explicitly (see `MARKET-DATA.md`, "EODHD adapter checklist").
+
+| Ref | Sev | Finding | Status |
+| --- | --- | --- | --- |
+| Re-review R1 | P3 | `DISTINCT ON` latest/first-close reads still scan each listing's matching rows in Postgres; `minStart` shared per 500-listing chunk | Open. Use `LEFT JOIN LATERAL … LIMIT 1` on the `(listing_id, trade_date)` PK; confirm with `EXPLAIN (ANALYZE, BUFFERS)` (before S6 scale work). |
+| Re-review R2 | P3 | D21 relies on adapters not returning the current session's bar before its close | Documented in the EODHD adapter checklist; optional service-side guard later. |
+| Re-review R3 | P3 | Metrics window uses `DEFAULT_TOLERANCE_DAYS` while `computePerformance` uses its default implicitly | Open. Pass the same constant explicitly to `computePerformance`. |
+| Re-review R4 | P3 | Quote rejected by the service scale check recorded as `not_found`; stored quotes can get `bad_payload` if `recordSuccesses` throws | Open (diagnostics only, no financial effect). |
+| Re-review R5 | P3 | Markdown typo in `MARKET-DATA.md` | **Fixed.** |
+| Re-review P3-3 | P3 | `listing_metrics` has no staleness flag | Open for S6: derive staleness from `as_of_date` / `computed_at`, or add a column. |
+| Re-audit P3 | P3 | Pattern-only redaction misses JSON-style `"api_token":"…"` when the secret is not configured | Open; covered today because the token is always passed as a secret. Handle at the EODHD adapter security review. |

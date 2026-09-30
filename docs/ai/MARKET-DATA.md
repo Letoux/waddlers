@@ -68,7 +68,7 @@ Computed only with the domain functions (`computePerformance`, `convert`); the s
 
 **FX rule.** `price_eur` = domain `convert` with the latest stored rate dated on or before the as-of date and at most `fxToleranceDays` (7) older. 7 days is deliberately tighter than the 10-day close tolerance of the domain: ECB publishes every TARGET working day, so the longest legitimate gap is about 4 days (Good Friday to Easter Monday plus weekends); a base CLOSE may sit further back because exchange holidays differ by market. Otherwise `price_eur` is NULL with `price_eur_reason = rate_missing` (never a rate of 1). GBX: pence / 100 / (GBP per EUR).
 
-****Reads are bounded and batched** (`metrics-reads.ts`): per listing only the closes from `asOf - 60 months - 10 days`, the latest close below that window (so a base lookup fails for the same reason as with the full series) and the first close on/after `history_complete_from` (the `max` base); one query per kind over `inArray(listings)`, one batched upsert of the rows. A test asserts the rows equal the unbounded computation. **Errors are isolated per listing**: one that cannot be computed (invalid timezone, bad data) is logged, counted in `failed`, and the others are still stored.
+**Reads are bounded and batched** (`metrics-reads.ts`): per listing only the closes from `asOf - 60 months - 10 days`, the latest close below that window (so a base lookup fails for the same reason as with the full series) and the first close on/after `history_complete_from` (the `max` base); one query per kind over `inArray(listings)`, one batched upsert of the rows. A test asserts the rows equal the unbounded computation. **Errors are isolated per listing**: one that cannot be computed (invalid timezone, bad data) is logged, counted in `failed`, and the others are still stored.
 
 **`history_complete_from`** = the date of the first stored close, set only after a full backfill where the provider says the series reached its own start; never the request's `from` (D14). Without it `perf_max` is NULL with reason `history_completeness_unknown`.
 
@@ -104,3 +104,14 @@ Refresh window = weekday, from open to close + 30 min. **Holidays are not modell
 - Read through `MarketDataService` (`getQuote`, `getDailyHistory`, `getLatestFx`) from oRPC procedures, or SQL over `listing_metrics` for table sort/filter (partial indexes exist on price_eur and every perf column; "NULLs sort last" is a QUERY requirement: write `ORDER BY ... NULLS LAST` explicitly; and the partial indexes are to be validated with `EXPLAIN` on realistic data in S6, they are not proven to serve the final table queries).
 - Show `—` for NULL values, with the reason code; show freshness (`stale`) and `asOf`.
 - Position value/portfolio history: domain `valuation` / `buildValueSeries` with `price_daily`, `fx_daily`; nothing is precomputed for them.
+
+## EODHD adapter checklist (before D1 lands)
+
+The real adapter needs its own mandatory security review. It must:
+
+- Round provider numbers explicitly, half-even, at the provider boundary: 8 dp for prices, 10 dp for FX. Values that do not fit the column scale are otherwise dropped (a real-world `183.45000000000002` must become `183.45`, not a gap). `adjusted_close` is informational and may be NULL.
+- Map `close` from the split-only adjusted field (D3); `adjusted_close` also adjusts for dividends.
+- Never return the current session's daily bar before that session's close: with D21 a partial bar would win over the live quote.
+- Return the currency of history batches (checked against the listing, GBP vs GBX rejected); confirm the JSE/TASE codes (`ZAC`, `ILA`) before mapping minor units.
+- Chunk quote requests to the provider's batch/URL limits, and honour `AbortSignal`.
+- Pass its token through `secrets` (redaction) and read it only from the worker env (`EODHD_API_TOKEN`).
