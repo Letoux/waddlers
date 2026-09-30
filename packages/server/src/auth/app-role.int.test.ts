@@ -5,7 +5,19 @@ import { seedDevWorkspace } from '../admin/seed';
 import { closeDb, getDb } from '../db/client';
 import { setupAppRole } from '../db/roles';
 import { resetEnvCache } from '../env';
-import { spaces, users } from '../db/schema';
+import {
+  fxDaily,
+  listingMetrics,
+  marketDataFetchState,
+  priceDaily,
+  providerUsage,
+  quoteLatest,
+  spaces,
+  users,
+} from '../db/schema';
+import { runNightly, refreshHeldQuotes } from '../market-data/jobs';
+import { createMarketDataRuntime } from '../market-data/runtime';
+import { marketDataEnvSchema } from '../env';
 import { createApp, ORIGIN, PASSWORD, TEST_AUTH_SECRET } from '../../test/auth-harness';
 
 const ROLE = 'waddlers_app_it';
@@ -27,6 +39,16 @@ describe('auth flow as the DML-only app role', () => {
     resetEnvCache();
   });
   afterAll(async () => {
+    for (const table of [
+      priceDaily,
+      quoteLatest,
+      fxDaily,
+      marketDataFetchState,
+      providerUsage,
+      listingMetrics,
+    ]) {
+      await getDb().delete(table);
+    }
     await getDb().delete(spaces); // DML only: no truncate (cascades members/positions)
     await getDb().delete(users);
     await closeDb();
@@ -98,5 +120,27 @@ describe('auth flow as the DML-only app role', () => {
     expect(
       (await rpc('positions.remove', { spaceId: extra.id, positionId: row.id }, { cookie })).status,
     ).toBe(200);
+  });
+
+  it('market data: quotes, nightly job, metrics and the session purge run with DML only', async () => {
+    const seeded = await seedDevWorkspace(getDb(), {
+      NODE_ENV: 'development',
+      APP_ORIGIN: ORIGIN,
+      DATABASE_URL: 'postgres://localhost/x',
+      SEED_USER_USERNAME: 'spaceuser',
+    });
+    expect(seeded.spaces.length).toBeGreaterThan(0);
+    const runtime = createMarketDataRuntime(getDb(), marketDataEnvSchema.parse({}), {
+      clock: () => new Date('2026-09-30T13:00:00Z'),
+    });
+    const quotes = await refreshHeldQuotes({ db: getDb(), runtime });
+    expect(quotes.outcomes.failed).toBe(0);
+    expect(quotes.outcomes.refreshed).toBeGreaterThan(0);
+    const nightly = await runNightly({ db: getDb(), runtime });
+    expect(nightly.history.failed).toBe(0);
+    expect(nightly.fx).toBe('refreshed');
+    expect(nightly.metrics).toBeGreaterThan(0);
+    expect((await getDb().select().from(listingMetrics)).length).toBe(nightly.metrics);
+    expect((await getDb().select().from(providerUsage))[0]?.calls).toBeGreaterThan(0);
   });
 });

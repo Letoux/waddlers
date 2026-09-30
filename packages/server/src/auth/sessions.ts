@@ -140,3 +140,15 @@ export async function rotateSession(
     .returning({ id: sessions.id });
   return rows.length === 0 ? null : { token, expiresAt };
 }
+
+/**
+ * Global housekeeping (worker, nightly): drops every expired session, for all users. Uses
+ * `sessions_expires_at_idx`. Idempotent. Returns the number of rows deleted.
+ */
+export async function purgeAllExpiredSessions(db: Executor, now: Date): Promise<number> {
+  const deleted = await db
+    .delete(sessions)
+    .where(lt(sessions.expiresAt, now))
+    .returning({ id: sessions.id });
+  return deleted.length;
+}

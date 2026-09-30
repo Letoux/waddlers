@@ -8,7 +8,10 @@ import { AdminError } from './errors';
 export { createDatabase, type Database } from '../db/create';
 export { pgErrorCode } from '../db/errors';
 export { AdminError } from './errors';
-export { runAdminCli, USAGE, type CliIo } from './cli';
+export { runAdminCli, USAGE, type CliIo, type CliServices } from './cli';
+export { createMarketDataRuntime, startWorker, type MarketDataRuntime } from '../market-data';
+export { parseWorkerEnv } from '../env';
+export { consoleLogger } from '../market-data/types';
 export { readSecret } from './prompt';
 export { seedDevUser, seedDevWorkspace } from './seed';
 export {

@@ -1,0 +1,259 @@
+import { eq, sql } from 'drizzle-orm';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { getDb } from '../db/client';
+import {
+  listingMetrics,
+  marketDataFetchState,
+  priceDaily,
+  quoteLatest,
+  sessions,
+  users,
+} from '../db/schema';
+import { purgeAllExpiredSessions } from '../auth/sessions';
+import { marketDataEnvSchema } from '../env';
+import { createPositionRow, createSpaceRow, ensureReferenceData } from '../../test/space-fixtures';
+import { releaseTestEnv, useTestEnv } from '../../test/auth-harness';
+import { TestClock, resetMarketTables } from '../../test/market-fixtures';
+import { refreshHeldQuotes, refreshMarket, runNightly } from './jobs';
+import { FakeMarketDataProvider } from './fake-provider';
+import { FakeFxProvider } from './fx-fake';
+import { createMarketDataRuntime } from './runtime';
+import { startWorker } from './scheduler';
+import { silentLogger } from './types';
+
+beforeAll(useTestEnv);
+afterAll(releaseTestEnv);
+
+let clock: TestClock;
+let ids: Awaited<ReturnType<typeof ensureReferenceData>>;
+let provider: FakeMarketDataProvider;
+
+function runtime() {
+  provider = new FakeMarketDataProvider({ clock: clock.now });
+  return createMarketDataRuntime(getDb(), marketDataEnvSchema.parse({}), {
+    clock: clock.now,
+    provider,
+    fx: new FakeFxProvider({ clock: clock.now }),
+    config: { blockingFetchMs: 2000 },
+  });
+}
+
+beforeEach(async () => {
+  await resetMarketTables();
+  ids = await ensureReferenceData();
+  clock = new TestClock(new Date('2026-09-30T13:00:00Z').getTime()); // Paris/London open, NY open at 13:30Z
+  const space = await createSpaceRow('PEA');
+  await createPositionRow(space, ids.ai, '2');
+  await createPositionRow(space, ids.shel, '3');
+});
+
+const quoteIds = async () =>
+  (await getDb().select({ id: quoteLatest.listingId }).from(quoteLatest)).map((r) => r.id).sort();
+
+describe('refreshHeldQuotes', () => {
+  it('refreshes held listings only (unheld MSFT / CW8 are never requested)', async () => {
+    const rt = runtime();
+    const res = await refreshHeldQuotes({ db: getDb(), runtime: rt });
+    expect(res).toMatchObject({ held: 2, inWindow: 2, outcomes: { refreshed: 2 } });
+    expect(await quoteIds()).toEqual([ids.ai.listingId, ids.shel.listingId].sort());
+    expect(provider.calls.quotes).toBe(1); // one batched provider call
+    // metrics were recomputed for the refreshed listings by the service hook
+    expect(await getDb().select().from(listingMetrics)).toHaveLength(2);
+  });
+
+  it('skips exchanges outside their window and repeats safely (fresh quotes are not refetched)', async () => {
+    const rt = runtime();
+    clock.set('2026-09-30T18:00:00Z'); // Paris/London closed (beyond close + grace)
+    expect(await refreshHeldQuotes({ db: getDb(), runtime: rt })).toMatchObject({
+      held: 2,
+      inWindow: 0,
+    });
+    expect(provider.calls.quotes).toBe(0);
+
+    clock.set('2026-09-30T13:00:00Z');
+    await refreshHeldQuotes({ db: getDb(), runtime: rt });
+    clock.advance(60_000);
+    const again = await refreshHeldQuotes({ db: getDb(), runtime: rt });
+    expect(again.outcomes).toMatchObject({ skipped_fresh: 2, refreshed: 0 });
+    expect(provider.calls.quotes).toBe(1);
+  });
+
+  it('does not refresh on a weekend', async () => {
+    clock.set('2026-10-03T13:00:00Z'); // Saturday
+    const res = await refreshHeldQuotes({ db: getDb(), runtime: runtime() });
+    expect(res.inWindow).toBe(0);
+  });
+});
+
+describe('runNightly (end to end with the fake providers)', () => {
+  it('backfills history and FX, computes metrics for held listings and purges expired sessions', async () => {
+    const [user] = await getDb()
+      .insert(users)
+      .values({ username: 'nightly', passwordHash: 'x' })
+      .returning();
+    const session = (hash: string, expiresAt: string) => ({
+      userId: user!.id,
+      tokenHash: hash.repeat(64).slice(0, 64),
+      expiresAt: new Date(expiresAt),
+    });
+    await getDb()
+      .insert(sessions)
+      .values([
+        session('a', '2026-09-29T00:00:00Z'),
+        session('b', '2026-09-30T12:59:59Z'),
+        session('c', '2026-09-30T13:00:01Z'),
+        session('d', '2026-12-01T00:00:00Z'),
+      ]);
+
+    const rt = runtime();
+    const result = await runNightly({ db: getDb(), runtime: rt });
+    expect(result.history).toMatchObject({ refreshed: 2, failed: 0 });
+    expect(result.fx).toBe('refreshed');
+    expect(result.metrics).toBe(2);
+    expect(result.purgedSessions).toBe(2);
+    expect((await getDb().select().from(sessions)).map((s) => s.tokenHash[0]).sort()).toEqual([
+      'c',
+      'd',
+    ]);
+
+    const held = [ids.ai.listingId, ids.shel.listingId];
+    for (const id of held) {
+      const bars = await getDb().select().from(priceDaily).where(eq(priceDaily.listingId, id));
+      expect(bars.length).toBeGreaterThan(1000);
+      const [state] = await getDb()
+        .select()
+        .from(marketDataFetchState)
+        .where(eq(marketDataFetchState.listingId, id));
+      expect(state?.historyCompleteFrom).toBe(bars.map((b) => b.tradeDate).sort()[0]);
+    }
+    // Unheld listings got nothing.
+    expect(
+      await getDb().select().from(priceDaily).where(eq(priceDaily.listingId, ids.msft.listingId)),
+    ).toHaveLength(0);
+
+    const rows = await getDb().select().from(listingMetrics);
+    expect(rows).toHaveLength(2);
+    const shel = rows.find((r) => r.listingId === ids.shel.listingId)!;
+    expect(shel.priceCurrency).toBe('GBX');
+    expect(shel.priceEur).not.toBeNull();
+    expect(shel.perfMax).not.toBeNull(); // history_complete_from known after the full backfill
+    expect(shel.perf1y).not.toBeNull();
+
+    // A second run within the TTL is a no-op for providers.
+    const historyCalls = provider.calls.history;
+    const again = await runNightly({ db: getDb(), runtime: rt });
+    expect(again.history).toMatchObject({ skipped_fresh: 2 });
+    expect(again.fx).toBe('skipped_fresh');
+    expect(provider.calls.history).toBe(historyCalls);
+  });
+
+  it('a provider outage leaves metrics with NULLs and reasons, not zeros', async () => {
+    const rt = runtime();
+    provider.setFailure({ mode: 'error', code: 'upstream_error' });
+    const result = await runNightly({ db: getDb(), runtime: rt });
+    expect(result.history).toMatchObject({ failed: 2 });
+    const rows = await getDb().select().from(listingMetrics);
+    expect(rows).toHaveLength(2);
+    for (const r of rows) {
+      expect(r.price).toBeNull();
+      expect(r.perf1w).toBeNull();
+      expect(r.perf1wReason).toBe('end_missing');
+    }
+  });
+});
+
+describe('refreshMarket (operator command)', () => {
+  it('forces past the TTL for a single listing but honours the backoff', async () => {
+    const rt = runtime();
+    await refreshMarket(
+      { db: getDb(), runtime: rt },
+      { scopes: ['quotes'], listing: { symbol: 'AI', mic: 'XPAR' } },
+    );
+    const report = await refreshMarket(
+      { db: getDb(), runtime: rt },
+      { scopes: ['quotes'], listing: { symbol: 'AI', mic: 'XPAR' } },
+    );
+    expect(report.quotes?.refreshed).toBe(1); // maxAge 0: not skipped as fresh
+    provider.setFailure({ mode: 'error', code: 'network' });
+    await refreshMarket(
+      { db: getDb(), runtime: rt },
+      { scopes: ['quotes'], listing: { symbol: 'AI', mic: 'XPAR' } },
+    );
+    const blocked = await refreshMarket(
+      { db: getDb(), runtime: rt },
+      { scopes: ['quotes'], listing: { symbol: 'AI', mic: 'XPAR' } },
+    );
+    expect(blocked.quotes?.skipped_backoff).toBe(1);
+  });
+
+  it('rejects an unknown listing', async () => {
+    await expect(
+      refreshMarket(
+        { db: getDb(), runtime: runtime() },
+        { scopes: ['quotes'], listing: { symbol: 'NOPE', mic: 'XPAR' } },
+      ),
+    ).rejects.toThrow('Unknown listing');
+  });
+});
+
+describe('purgeAllExpiredSessions', () => {
+  it('removes only expired sessions and is idempotent', async () => {
+    const [user] = await getDb()
+      .insert(users)
+      .values({ username: 'purge', passwordHash: 'x' })
+      .returning();
+    const mk = (c: string, expiresAt: string) => ({
+      userId: user!.id,
+      tokenHash: c.repeat(64),
+      expiresAt: new Date(expiresAt),
+    });
+    await getDb()
+      .insert(sessions)
+      .values([
+        mk('1', '2026-09-30T12:00:00Z'),
+        mk('2', '2026-09-30T13:00:00Z'),
+        mk('3', '2026-10-30T00:00:00Z'),
+      ]);
+    expect(await purgeAllExpiredSessions(getDb(), clock.now())).toBe(1); // expiresAt == now is not yet expired
+    expect(await purgeAllExpiredSessions(getDb(), clock.now())).toBe(0);
+    expect(
+      await getDb()
+        .select({ n: sql<number>`count(*)::int` })
+        .from(sessions),
+    ).toEqual([{ n: 2 }]);
+  });
+});
+
+describe('startWorker', () => {
+  it('runs nightly then quotes on start, never overlaps a job, and stop() waits for the running job', async () => {
+    const rt = runtime();
+    const timers: { fn: () => void; ms: number }[] = [];
+    const worker = startWorker({
+      ctx: { db: getDb(), runtime: rt },
+      logger: silentLogger,
+      setTimer: ((fn: () => void, ms: number) => {
+        timers.push({ fn, ms });
+        return { unref() {} } as unknown as ReturnType<typeof setTimeout>;
+      }) as unknown as typeof setTimeout,
+      clearTimer: (() => {}) as typeof clearTimeout,
+    });
+    // Catch-up on start: nightly first, then the first quote tick.
+    for (let i = 0; i < 200 && provider.calls.quotes === 0; i += 1)
+      await new Promise((r) => setTimeout(r, 50));
+    await worker.stop();
+    expect(provider.calls.history).toBe(2);
+    expect(await getDb().select().from(listingMetrics)).toHaveLength(2);
+    // Next nightly is scheduled at 03:30 UTC tomorrow (14.5 h from 13:00).
+    expect(timers.some((t) => t.ms === 14.5 * 3_600_000)).toBe(true);
+    expect(worker.lock.isRunning('nightly')).toBe(false);
+    expect(worker.lock.isRunning('quotes')).toBe(false);
+  });
+
+  it('stop() right after start aborts between listings and returns with no job left running', async () => {
+    const rt = runtime();
+    const worker = startWorker({ ctx: { db: getDb(), runtime: rt }, logger: silentLogger });
+    await worker.stop();
+    expect(worker.lock.isRunning('nightly')).toBe(false);
+    expect(provider.calls.quotes).toBe(0); // no new tick is scheduled after stop
+  });
+});

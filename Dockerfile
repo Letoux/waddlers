@@ -22,6 +22,17 @@ WORKDIR /repo/packages/server
 USER node
 CMD ["sh", "-c", "./node_modules/.bin/tsx src/scripts/setup-roles.ts && ./node_modules/.bin/tsx src/scripts/migrate.ts"]
 
+# Market-data worker (Compose `worker` service). SINGLE INSTANCE ONLY (D13): the job lock is
+# in-process. Non-root, runs tsx directly (no pnpm/corepack at runtime). Reads DATABASE_URL and the
+# market-data settings from the environment; there is no .env inside the image.
+FROM deps AS worker
+COPY packages packages
+COPY apps/worker apps/worker
+WORKDIR /repo/apps/worker
+ENV NODE_ENV=production
+USER node
+CMD ["./node_modules/.bin/tsx", "src/index.ts"]
+
 FROM deps AS build
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1

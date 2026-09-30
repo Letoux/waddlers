@@ -21,7 +21,8 @@
     "db:check": "pnpm --filter @waddlers/server db:check",
     "db:setup-roles": "pnpm --filter @waddlers/server db:setup-roles",
     "db:seed": "pnpm --filter @waddlers/worker db:seed",
-    "admin": "pnpm --filter @waddlers/worker admin"
+    "admin": "pnpm --filter @waddlers/worker admin",
+    "worker": "pnpm --filter @waddlers/worker start"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

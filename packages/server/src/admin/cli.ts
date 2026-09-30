@@ -11,6 +11,14 @@ import {
   revokeSpace,
 } from './spaces';
 import type { Database } from '../db/create';
+import type { MarketDataRuntime } from '../market-data/runtime';
+import {
+  formatMarketStatus,
+  formatRefreshReport,
+  marketRefresh,
+  marketStatus,
+  parseMarketFlags,
+} from './market';
 
 export const USAGE = `Usage: pnpm admin -- <command> [arguments]
 
@@ -29,6 +37,12 @@ Spaces (created and shared by the admin only; quote names containing spaces):
                                              track a listing already in the reference data
                                              (e.g. AI.XPAR 10.5); no quantity = watchlist entry
 
+Market data (provider from MARKET_DATA_PROVIDER / FX_PROVIDER; needs no HTTP server):
+  market:refresh [--quotes] [--history] [--fx] [--metrics] [<symbol>.<MIC>]
+                                             refresh past the TTLs (backoff and daily quota still apply);
+                                             no flag = all four; no listing = every held listing
+  market:status                              cache/backoff state per kind, failing entries, provider usage
+
 The password is never accepted as an argument. Non-interactive:
   printf '%s\\n' "$PASSWORD" | pnpm admin -- user:create alice`;
 
@@ -41,16 +55,32 @@ export interface CliIo {
   interactive: boolean;
 }
 
+export interface CliServices {
+  /** Builds the market-data runtime on demand (reads provider settings from the environment). */
+  market?: () => MarketDataRuntime;
+}
+
 /** Returns the process exit code. Only operator-safe messages are printed. */
-export async function runAdminCli(argv: string[], db: Database, io: CliIo): Promise<number> {
+export async function runAdminCli(
+  argv: string[],
+  db: Database,
+  io: CliIo,
+  services: CliServices = {},
+): Promise<number> {
   const args = argv[0] === '--' ? argv.slice(1) : argv;
-  const [command, ...params] = args;
+  const [command, ...rawParams] = args;
+  let params = rawParams;
   const say = (text: string) => io.out.write(`${text}\n`);
   const fail = (text: string) => {
     io.err.write(`${text}\n`);
     return 1;
   };
-  if (!command || params.some((p) => p.startsWith('-'))) return fail(USAGE);
+  if (!command) return fail(USAGE);
+  // Only `market:refresh` takes options; everywhere else a dash-prefixed argument is refused
+  // (a password or name must never be mistaken for an option).
+  const flags = command === 'market:refresh' ? params.filter((p) => p.startsWith('-')) : [];
+  if (command !== 'market:refresh' && params.some((p) => p.startsWith('-'))) return fail(USAGE);
+  params = params.filter((p) => !flags.includes(p));
   const arity = Object.hasOwn(ARITY, command) ? ARITY[command] : undefined;
   if (!arity) return fail(`Unknown command: ${command}\n\n${USAGE}`);
   if (params.length < arity[0] || params.length > arity[1]) return fail(USAGE);
@@ -118,6 +148,20 @@ export async function runAdminCli(argv: string[], db: Database, io: CliIo): Prom
         );
         return 0;
       }
+      case 'market:refresh': {
+        const runtime = services.market?.();
+        if (!runtime) return fail('Market data is not available in this context.');
+        const report = await marketRefresh(db, runtime, {
+          scopes: parseMarketFlags(flags),
+          ...(params.length === 1 ? { listing: p1 } : {}),
+        });
+        for (const line of formatRefreshReport(report)) say(line);
+        return 0;
+      }
+      case 'market:status': {
+        for (const line of formatMarketStatus(await marketStatus(db, new Date()))) say(line);
+        return 0;
+      }
       default:
         return fail(`Unknown command: ${command}\n\n${USAGE}`);
     }
@@ -139,6 +183,8 @@ const ARITY: Record<string, readonly [number, number]> = {
   'space:revoke': [2, 2],
   'space:list': [0, 0],
   'position:add': [2, 3],
+  'market:refresh': [0, 1],
+  'market:status': [0, 0],
 };
 
 async function promptNewPassword(io: CliIo): Promise<string> {

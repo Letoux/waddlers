@@ -18,6 +18,37 @@ function isHttpOrigin(value: string): boolean {
   }
 }
 
+/** Compose passes unset variables as '': treat them as absent so defaults apply. */
+const emptyToUndefined = (value: unknown) => (value === '' ? undefined : value);
+
+function boundedInt(min: number, max: number, fallback: number) {
+  return z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(min).max(max).default(fallback),
+  );
+}
+
+/**
+ * Market-data settings (S4), shared by the web env and the worker/CLI env. Every value has a
+ * default; TTLs follow specs 27 and docs/ai/MARKET-DATA.md.
+ */
+export const marketDataEnvShape = {
+  MARKET_DATA_PROVIDER: z.preprocess(emptyToUndefined, z.enum(['fake', 'eodhd']).default('fake')),
+  FX_PROVIDER: z.preprocess(emptyToUndefined, z.enum(['fake', 'ecb']).default('fake')),
+  /** Provider credential. Never logged, never echoed by validation errors. */
+  EODHD_API_TOKEN: z.preprocess(emptyToUndefined, z.string().min(8).max(256).optional()),
+  MARKET_DATA_QUOTE_TTL_MINUTES: boundedInt(1, 24 * 60, 15),
+  MARKET_DATA_HISTORY_TTL_HOURS: boundedInt(1, 24 * 14, 12),
+  MARKET_DATA_FX_TTL_HOURS: boundedInt(1, 24 * 14, 12),
+  /** Provider calls per UTC day (every attempt counts), persisted in `provider_usage`. */
+  MARKET_DATA_DAILY_QUOTA: boundedInt(1, 10_000_000, 5000),
+  MARKET_DATA_CONCURRENCY: boundedInt(1, 32, 4),
+  MARKET_DATA_TIMEOUT_MS: boundedInt(500, 120_000, 8000),
+} as const;
+
+export const marketDataEnvSchema = z.object(marketDataEnvShape);
+export type MarketDataEnv = z.infer<typeof marketDataEnvSchema>;
+
 // Refinement messages are static on purpose: a failing value (which may embed a
 // password) must never be echoed back.
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -30,7 +61,7 @@ export const envSchema = z
       .string()
       .refine(isHttpOrigin, 'must be an http(s) origin')
       .transform((value) => new URL(value).origin),
-    MARKET_DATA_PROVIDER: z.enum(['fake', 'eodhd']),
+    ...marketDataEnvShape,
     /** HMAC key for device cookies (>= 32 bytes). Never logged; env errors never echo values. */
     AUTH_SECRET: z
       .string()
@@ -80,6 +111,28 @@ export function parseEnv(source: Record<string, string | undefined>): Env {
   throw new EnvValidationError(
     variables,
     `Invalid environment configuration:\n${lines.join('\n')}`,
+  );
+}
+
+/** Worker/CLI env: the database plus the market-data settings (no web-only variables). */
+export const workerEnvSchema = z.object({
+  DATABASE_URL: z.string().refine(isPostgresUrl, 'must be a postgres:// or postgresql:// URL'),
+  ...marketDataEnvShape,
+});
+export type WorkerEnv = z.infer<typeof workerEnvSchema>;
+
+export function parseWorkerEnv(source: Record<string, string | undefined>): WorkerEnv {
+  const result = workerEnvSchema.safeParse(source);
+  if (result.success) return result.data;
+  const names = result.error.issues.map((issue) => issue.path.join('.') || '(root)');
+  throw new EnvValidationError(
+    names,
+    `Invalid environment configuration:\n${result.error.issues
+      .map(
+        (i) =>
+          `  - ${i.path.join('.') || '(root)'}: ${i.code === 'invalid_type' ? 'is missing or not a string' : i.message}`,
+      )
+      .join('\n')}`,
   );
 }
 

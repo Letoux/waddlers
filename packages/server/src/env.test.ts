@@ -18,9 +18,32 @@ describe('parseEnv', () => {
 
   it('rejects missing variables and names them', () => {
     expect(() => parseEnv({ ...valid, DATABASE_URL: undefined })).toThrow(/DATABASE_URL/);
-    expect(() => parseEnv({ ...valid, MARKET_DATA_PROVIDER: undefined })).toThrow(
-      /MARKET_DATA_PROVIDER/,
+  });
+
+  it('defaults the market-data settings and treats Compose empty strings as unset', () => {
+    const env = parseEnv({ ...valid, MARKET_DATA_PROVIDER: '', FX_PROVIDER: '' });
+    expect(env).toMatchObject({
+      MARKET_DATA_PROVIDER: 'fake',
+      FX_PROVIDER: 'fake',
+      MARKET_DATA_QUOTE_TTL_MINUTES: 15,
+      MARKET_DATA_HISTORY_TTL_HOURS: 12,
+      MARKET_DATA_FX_TTL_HOURS: 12,
+    });
+    expect(env.EODHD_API_TOKEN).toBeUndefined();
+  });
+
+  it('validates market-data settings without echoing values', () => {
+    expect(() => parseEnv({ ...valid, FX_PROVIDER: 'nope' })).toThrow(/FX_PROVIDER/);
+    expect(() => parseEnv({ ...valid, MARKET_DATA_QUOTE_TTL_MINUTES: '0' })).toThrow(
+      /MARKET_DATA_QUOTE_TTL_MINUTES/,
     );
+    let message = '';
+    try {
+      parseEnv({ ...valid, EODHD_API_TOKEN: 'x' });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('EODHD_API_TOKEN');
   });
 
   it('rejects an unknown provider and a non-postgres URL', () => {

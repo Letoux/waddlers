@@ -74,5 +74,36 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Market-data worker: refreshes quotes every 15 min for held listings during market hours and runs
+  # the nightly history/FX/metrics/session-purge job. SINGLE INSTANCE ONLY (D13): its job lock is
+  # in-process, so never scale this service above 1 (a second replica would double-fetch and burn
+  # the provider quota). Same DML-only database role as `web`; non-root; explicit env allow-list.
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    profiles: ['app']
+    restart: unless-stopped
+    stop_grace_period: 40s
+    environment:
+      DATABASE_URL: postgres://waddlers_app:${APP_DB_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-waddlers}
+      MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-fake}
+      FX_PROVIDER: ${FX_PROVIDER:-fake}
+      EODHD_API_TOKEN: ${EODHD_API_TOKEN:-}
+      MARKET_DATA_QUOTE_TTL_MINUTES: ${MARKET_DATA_QUOTE_TTL_MINUTES:-}
+      MARKET_DATA_HISTORY_TTL_HOURS: ${MARKET_DATA_HISTORY_TTL_HOURS:-}
+      MARKET_DATA_FX_TTL_HOURS: ${MARKET_DATA_FX_TTL_HOURS:-}
+      MARKET_DATA_DAILY_QUOTA: ${MARKET_DATA_DAILY_QUOTA:-}
+      MARKET_DATA_CONCURRENCY: ${MARKET_DATA_CONCURRENCY:-}
+      MARKET_DATA_TIMEOUT_MS: ${MARKET_DATA_TIMEOUT_MS:-}
+    deploy:
+      replicas: 1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   postgres-data:

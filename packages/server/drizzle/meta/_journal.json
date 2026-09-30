@@ -29,6 +29,13 @@
       "when": 1790765274657,
       "tag": "0003_space_constraints",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790767282639,
+      "tag": "0004_market_data",
+      "breakpoints": true
     }
   ]
 }

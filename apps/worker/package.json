@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts",
+    "start": "tsx --env-file-if-exists=../../.env src/index.ts",
     "typecheck": "tsc -p tsconfig.json",
     "admin": "tsx --env-file-if-exists=../../.env src/admin.ts",
     "db:seed": "tsx --env-file-if-exists=../../.env src/seed.ts"
