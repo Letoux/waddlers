@@ -7,12 +7,11 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ROLE_LABELS } from '@/lib/spaces/errors';
 import { spaceHref } from '@/lib/spaces/nav';
-import { useSetActiveSpace, useSpacesQuery } from '@/lib/spaces/use-spaces';
+import { useSpacesQuery } from '@/lib/spaces/use-spaces';
 
 /** Spaces the user can access, with role and count. Creating/renaming is admin-only. */
 export function SpacesList() {
   const query = useSpacesQuery({ fresh: true });
-  const setActive = useSetActiveSpace();
 
   if (query.isPending) {
     return (
@@ -62,18 +61,12 @@ export function SpacesList() {
                 )}
               </p>
               <p className="text-sm text-muted-foreground">
-                {ROLE_LABELS[space.role]} · {space.positionCount} titre
+                {ROLE_LABELS[space.role]} · {space.positionCount.toLocaleString('fr-FR')} titre
                 {space.positionCount > 1 ? 's' : ''}
               </p>
             </div>
             <Button asChild variant={active ? 'outline' : 'default'} size="sm">
-              <Link
-                href={spaceHref(space.id)}
-                onClick={() => {
-                  if (!active) setActive.mutate({ spaceId: space.id });
-                }}
-                aria-label={`Ouvrir l’espace ${space.name}`}
-              >
+              <Link href={spaceHref(space.id)} aria-label={`Ouvrir l’espace ${space.name}`}>
                 Ouvrir
               </Link>
             </Button>

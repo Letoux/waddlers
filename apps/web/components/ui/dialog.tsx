@@ -100,7 +100,7 @@ function DialogFooter({
       {children}
       {showCloseButton && (
         <DialogPrimitive.Close asChild>
-          <Button variant="outline">Close</Button>
+          <Button variant="outline">Fermer</Button>
         </DialogPrimitive.Close>
       )}
     </div>

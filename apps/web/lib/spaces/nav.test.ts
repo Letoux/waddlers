@@ -9,6 +9,8 @@ describe('space navigation helpers', () => {
     expect(parseSpacePath('/espaces')).toBeNull();
     expect(parseSpacePath('/s/abc/autre')).toBeNull();
     expect(parseSpacePath('/settings')).toBeNull();
+    expect(parseSpacePath('/s/%E0%A4%A')).toBeNull();
+    expect(parseSpacePath('/s/%E0%A4%A/titres')).toBeNull();
   });
 
   it('keeps the sub-page when switching space', () => {

@@ -1,10 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { Menu } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import type { SpacesListOutput } from '@waddlers/contracts';
+import { orpc } from '@/lib/orpc';
 import { LogoutButton } from '@/components/auth/logout-button';
 import { Button } from '@/components/ui/button';
 import {
@@ -22,7 +24,7 @@ import {
   SheetTrigger,
 } from '@/components/ui/sheet';
 import { parseSpacePath, spaceHref, switchSpaceHref } from '@/lib/spaces/nav';
-import { useSetActiveSpace, useSpacesQuery } from '@/lib/spaces/use-spaces';
+import { useSpacesQuery } from '@/lib/spaces/use-spaces';
 import { cn } from '@/lib/utils';
 
 type NavItem = { href: string; label: string; active: boolean };
@@ -59,13 +61,26 @@ export function AppHeader({
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const { data = initialSpaces } = useSpacesQuery({ initialData: initialSpaces });
-  const setActive = useSetActiveSpace();
+  const queryClient = useQueryClient();
+  const [switching, startTransition] = useTransition();
 
   const fromPath = parseSpacePath(pathname);
   const candidate = fromPath?.spaceId ?? data.activeSpaceId;
   const selected = data.spaces.find((s) => s.id === candidate)?.id ?? '';
-  // Links of the space section follow the URL, else the active space; none without a space.
+  // Links of the space section follow the URL space (when we know it), else the active space;
+  // none without a space.
   const navSpaceId = selected || data.activeSpaceId || null;
+
+  // The URL names a space the cached list does not have (granted since the shell loaded, or an
+  // inaccessible id): refresh the list once, quietly. Opening the space records it as active.
+  const refreshedFor = useRef<string | null>(null);
+  const urlSpaceId = fromPath?.spaceId;
+  const urlSpaceKnown = !urlSpaceId || data.spaces.some((s) => s.id === urlSpaceId);
+  useEffect(() => {
+    if (urlSpaceKnown || !urlSpaceId || refreshedFor.current === urlSpaceId) return;
+    refreshedFor.current = urlSpaceId;
+    void queryClient.invalidateQueries({ queryKey: orpc.spaces.list.key() });
+  }, [urlSpaceKnown, urlSpaceId, queryClient]);
 
   const items: NavItem[] = [
     ...(navSpaceId
@@ -88,8 +103,8 @@ export function AppHeader({
 
   const switchTo = (spaceId: string) => {
     if (spaceId === selected) return;
-    setActive.mutate({ spaceId });
-    router.push(switchSpaceHref(pathname, spaceId));
+    // The destination page records the active space (ActivateSpace); nothing to send here.
+    startTransition(() => router.push(switchSpaceHref(pathname, spaceId)));
   };
 
   return (
@@ -103,10 +118,11 @@ export function AppHeader({
         </nav>
         <div className="ml-auto flex min-w-0 items-center gap-3">
           {data.spaces.length > 0 && (
-            <Select value={selected} onValueChange={switchTo}>
+            <Select value={selected} onValueChange={switchTo} disabled={switching}>
               <SelectTrigger
                 aria-label="Espace"
                 data-testid="space-selector"
+                aria-busy={switching || undefined}
                 className="w-40 max-w-full min-w-0 sm:w-56"
               >
                 <SelectValue placeholder="Espace" />

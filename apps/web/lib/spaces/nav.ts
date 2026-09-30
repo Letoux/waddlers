@@ -8,7 +8,14 @@ export function parseSpacePath(
 ): { spaceId: string; section: SpaceSection } | null {
   const m = SPACE_PATH.exec(pathname);
   if (!m || !m[1]) return null;
-  return { spaceId: decodeURIComponent(m[1]), section: m[2] === 'titres' ? 'titres' : 'dashboard' };
+  try {
+    return {
+      spaceId: decodeURIComponent(m[1]),
+      section: m[2] === 'titres' ? 'titres' : 'dashboard',
+    };
+  } catch {
+    return null; // malformed percent-encoding (e.g. /s/%E0%A4%A)
+  }
 }
 
 export function spaceHref(spaceId: string, section: SpaceSection = 'dashboard'): string {

@@ -4,7 +4,6 @@ import { useRef, useState } from 'react';
 import { Pencil } from 'lucide-react';
 import type { PositionRow } from '@waddlers/contracts';
 import { Input } from '@/components/ui/input';
-import { QUANTITY_INVALID_MESSAGE } from '@/lib/spaces/errors';
 import {
   formatQuantity,
   parseQuantityInput,
@@ -45,8 +44,10 @@ export function QuantityCell({
   const buttonRef = useRef<HTMLButtonElement>(null);
   // Guards against Enter followed by the blur fired while the input unmounts, and Escape+blur.
   const settled = useRef(false);
-  const mutation = useSetQuantity(spaceId, onSaved);
   const name = row.instrument.name;
+  const mutation = useSetQuantity(spaceId, row.id, () =>
+    onSaved(`Quantité de ${name} mise à jour.`),
+  );
 
   if (!canEdit) return <QuantityValue quantity={row.quantity} />;
 
@@ -56,19 +57,21 @@ export function QuantityCell({
     if (refocus) requestAnimationFrame(() => buttonRef.current?.focus());
   };
 
-  const commit = (refocus: boolean) => {
+  // `viaEnter`: only the Enter path may pull focus back to the field; on blur the user has
+  // already moved on (Tab, click), so an invalid value just keeps its message visible.
+  const commit = (viaEnter: boolean) => {
     if (settled.current) return;
     const parsed = parseQuantityInput(inputRef.current?.value ?? '');
     if (!parsed.ok) {
-      setError(QUANTITY_INVALID_MESSAGE);
-      inputRef.current?.focus();
+      setError(parsed.message);
+      if (viaEnter) inputRef.current?.focus();
       return;
     }
     settled.current = true;
     if (parsed.value !== row.quantity) {
       mutation.mutate({ spaceId, positionId: row.id, quantity: parsed.value });
     }
-    close(refocus);
+    close(viaEnter);
   };
 
   if (editing) {

@@ -5,6 +5,7 @@ import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from '@ta
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { loginUrlFor } from '@/lib/auth/safe-next';
+import { shouldRetryQuery } from '@/lib/query-retry';
 import { shouldRedirectToLogin } from '@/lib/auth/unauthorized';
 
 function makeQueryClient() {
@@ -28,6 +29,7 @@ function makeQueryClient() {
     defaultOptions: {
       queries: {
         staleTime: 60_000,
+        retry: shouldRetryQuery,
         refetchOnWindowFocus: false,
       },
     },

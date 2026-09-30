@@ -2,7 +2,6 @@ import type { Metadata } from 'next';
 import { ActivateSpace } from '@/components/spaces/activate-space';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ROLE_LABELS } from '@/lib/spaces/errors';
-import { formatQuantity } from '@/lib/spaces/quantity';
 import { requireSpace } from '@/server/spaces';
 
 export const metadata: Metadata = { title: 'Dashboard · Waddlers' };
@@ -32,7 +31,7 @@ export default async function SpaceDashboardPage({
         </CardHeader>
         <CardContent className="grid gap-2">
           <p className="text-3xl font-semibold" data-testid="tracked-count">
-            {formatQuantity(String(space.positionCount))}
+            {space.positionCount.toLocaleString('fr-FR')}
           </p>
           <p className="text-sm text-muted-foreground">
             Le tableau de bord (performance, graphiques, variations) arrive bientôt.

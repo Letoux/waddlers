@@ -31,19 +31,23 @@ function PositionItem({
   const { instrument, listing } = row;
   return (
     <tr
+      role="row"
       data-testid="position-row"
       className="relative flex flex-col gap-1 border-b py-3 md:table-row md:py-0"
     >
-      <td className="block pr-10 md:table-cell md:px-3 md:py-2.5 md:align-top">
+      <td role="cell" className="block pr-10 md:table-cell md:px-3 md:py-2.5 md:align-top">
         <p className="font-medium">{instrument.name}</p>
         {row.selectionReason && (
           <p className="text-xs text-muted-foreground">{row.selectionReason}</p>
         )}
       </td>
-      <td className="hidden text-sm text-muted-foreground md:table-cell md:px-3 md:py-2.5">
+      <td
+        role="cell"
+        className="hidden text-sm text-muted-foreground md:table-cell md:px-3 md:py-2.5"
+      >
         {TYPE_LABELS[instrument.type]}
       </td>
-      <td className="block text-sm md:table-cell md:px-3 md:py-2.5">
+      <td role="cell" className="block text-sm md:table-cell md:px-3 md:py-2.5">
         <span className="text-muted-foreground md:hidden">{TYPE_LABELS[instrument.type]} · </span>
         <span className="font-mono">{listing.symbol}</span>
         <span className="text-muted-foreground md:hidden">
@@ -51,19 +55,27 @@ function PositionItem({
           · {listing.exchange.name} ({listing.exchange.mic}) · {listing.currency}
         </span>
       </td>
-      <td className="hidden text-sm md:table-cell md:px-3 md:py-2.5">
+      <td role="cell" className="hidden text-sm md:table-cell md:px-3 md:py-2.5">
         {listing.exchange.name}{' '}
         <span className="text-muted-foreground">({listing.exchange.mic})</span>
       </td>
-      <td className="hidden text-sm md:table-cell md:px-3 md:py-2.5">{listing.currency}</td>
-      <td className="flex items-center justify-between gap-2 text-sm md:table-cell md:px-3 md:py-2.5 md:text-right">
+      <td role="cell" className="hidden text-sm md:table-cell md:px-3 md:py-2.5">
+        {listing.currency}
+      </td>
+      <td
+        role="cell"
+        className="flex items-center justify-between gap-2 text-sm md:table-cell md:px-3 md:py-2.5 md:text-right"
+      >
         <span className="text-muted-foreground md:hidden">Quantité</span>
         <span data-testid="quantity" className="inline-flex justify-end">
           <QuantityCell spaceId={spaceId} row={row} canEdit={canEdit} onSaved={onSaved} />
         </span>
       </td>
       {canEdit && (
-        <td className="absolute top-2 right-0 md:static md:table-cell md:px-1 md:py-1.5 md:text-right">
+        <td
+          role="cell"
+          className="absolute top-2 right-0 md:static md:table-cell md:px-1 md:py-1.5 md:text-right"
+        >
           <RemovePositionButton spaceId={spaceId} row={row} onRemoved={onRemoved} />
         </td>
       )}
@@ -78,8 +90,26 @@ export function PositionsList({ spaceId, canEdit }: { spaceId: string; canEdit: 
   const regionRef = useRef<HTMLDivElement>(null);
   const focusRegion = () => regionRef.current?.focus();
 
+  const gone = query.isError && spaceFailureKind(query.error) === 'not_found';
+  // Data kept after a failed refetch: shown, but flagged as not up to date.
+  const stale = query.isError && !gone && !!query.data;
+
   let content;
-  if (query.isPending) {
+  if (gone) {
+    // Revoked or deleted space: whatever is cached is no longer ours to show or edit.
+    content = (
+      <div className="grid max-w-md gap-4">
+        <Alert variant="destructive">
+          <AlertCircle />
+          <AlertTitle>Espace indisponible</AlertTitle>
+          <AlertDescription>Cet espace n’est plus disponible.</AlertDescription>
+        </Alert>
+        <Button asChild variant="outline" className="w-fit">
+          <Link href="/espaces">Voir mes espaces</Link>
+        </Button>
+      </div>
+    );
+  } else if (query.isPending) {
     content = (
       <div className="grid gap-2" role="status" aria-label="Chargement des titres">
         <Skeleton className="h-12 w-full" />
@@ -88,27 +118,18 @@ export function PositionsList({ spaceId, canEdit }: { spaceId: string; canEdit: 
       </div>
     );
   } else if (query.isError && !query.data) {
-    const gone = spaceFailureKind(query.error) === 'not_found';
     content = (
       <div className="grid max-w-md gap-4">
         <Alert variant="destructive">
           <AlertCircle />
-          <AlertTitle>{gone ? 'Espace indisponible' : 'Une erreur est survenue'}</AlertTitle>
+          <AlertTitle>Une erreur est survenue</AlertTitle>
           <AlertDescription>
-            {gone
-              ? 'Cet espace n’est plus disponible.'
-              : 'Les titres ne sont pas disponibles pour le moment. Veuillez réessayer.'}
+            Les titres ne sont pas disponibles pour le moment. Veuillez réessayer.
           </AlertDescription>
         </Alert>
-        {gone ? (
-          <Button asChild variant="outline" className="w-fit">
-            <Link href="/espaces">Voir mes espaces</Link>
-          </Button>
-        ) : (
-          <Button variant="outline" className="w-fit" onClick={() => void query.refetch()}>
-            Réessayer
-          </Button>
-        )}
+        <Button variant="outline" className="w-fit" onClick={() => void query.refetch()}>
+          Réessayer
+        </Button>
       </div>
     );
   } else if (query.data && query.data.rows.length === 0) {
@@ -124,36 +145,39 @@ export function PositionsList({ spaceId, canEdit }: { spaceId: string; canEdit: 
             {total.toLocaleString('fr-FR')} sont affichés.
           </p>
         )}
-        <table className="block w-full text-left md:table">
+        <table role="table" className="block w-full text-left md:table">
           <caption className="sr-only">Titres de l’espace</caption>
-          <thead className="hidden text-xs text-muted-foreground md:table-header-group">
-            <tr className="border-b">
-              <th scope="col" className="px-3 py-2 font-medium">
+          <thead
+            role="rowgroup"
+            className="hidden text-xs text-muted-foreground md:table-header-group"
+          >
+            <tr role="row" className="border-b">
+              <th role="columnheader" scope="col" className="px-3 py-2 font-medium">
                 Titre
               </th>
-              <th scope="col" className="px-3 py-2 font-medium">
+              <th role="columnheader" scope="col" className="px-3 py-2 font-medium">
                 Type
               </th>
-              <th scope="col" className="px-3 py-2 font-medium">
+              <th role="columnheader" scope="col" className="px-3 py-2 font-medium">
                 Symbole
               </th>
-              <th scope="col" className="px-3 py-2 font-medium">
+              <th role="columnheader" scope="col" className="px-3 py-2 font-medium">
                 Place
               </th>
-              <th scope="col" className="px-3 py-2 font-medium">
+              <th role="columnheader" scope="col" className="px-3 py-2 font-medium">
                 Devise
               </th>
-              <th scope="col" className="px-3 py-2 text-right font-medium">
+              <th role="columnheader" scope="col" className="px-3 py-2 text-right font-medium">
                 Quantité
               </th>
               {canEdit && (
-                <th scope="col" className="px-1 py-2">
+                <th role="columnheader" scope="col" className="px-1 py-2">
                   <span className="sr-only">Actions</span>
                 </th>
               )}
             </tr>
           </thead>
-          <tbody className="block md:table-row-group">
+          <tbody role="rowgroup" className="block md:table-row-group">
             {rows.map((row) => (
               <PositionItem
                 key={row.id}
@@ -176,10 +200,32 @@ export function PositionsList({ spaceId, canEdit }: { spaceId: string; canEdit: 
   }
 
   return (
-    <div ref={regionRef} tabIndex={-1} className="outline-none" aria-label="Liste des titres">
+    <div
+      ref={regionRef}
+      role="region"
+      tabIndex={-1}
+      className="grid gap-3 outline-none"
+      aria-label="Liste des titres"
+    >
       <div role="status" aria-live="polite" className="sr-only" data-testid="save-status">
         {announcement}
       </div>
+      {stale && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center gap-3 rounded-md border px-3 py-2 text-sm text-muted-foreground"
+        >
+          <span>Données non actualisées.</span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={query.isFetching}
+            onClick={() => void query.refetch()}
+          >
+            Réessayer
+          </Button>
+        </div>
+      )}
       {content}
     </div>
   );

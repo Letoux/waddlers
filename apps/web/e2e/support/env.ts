@@ -28,14 +28,5 @@ export const ACCOUNT_KEYS = [
   'password-retry',
   'throttle',
   'rsc-anonymous',
-  'space-nav',
-  'space-forbidden',
-  'space-edit',
-  'space-clear',
-  'space-remove',
-  'space-viewer',
-  'space-mobile',
-  'space-currency',
-  'space-none',
 ] as const;
 export type AccountKey = (typeof ACCOUNT_KEYS)[number];

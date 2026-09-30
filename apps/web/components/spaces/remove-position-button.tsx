@@ -28,7 +28,7 @@ export function RemovePositionButton({
 }) {
   const [open, setOpen] = useState(false);
   const gone = useRef(false);
-  const mutation = useRemovePosition(spaceId);
+  const mutation = useRemovePosition(spaceId, row.id);
   const name = row.instrument.name;
 
   const confirm = () => {
@@ -39,12 +39,16 @@ export function RemovePositionButton({
         onSuccess: () => {
           gone.current = true;
           setOpen(false);
+          // The trigger disappears with the row: hand focus to the list region once the dialog
+          // has released it.
+          requestAnimationFrame(onRemoved);
         },
         onError: (error) => {
           // Already removed elsewhere: same outcome for the user, no error.
           if (spaceFailureKind(error) === 'not_found') {
             gone.current = true;
             setOpen(false);
+            requestAnimationFrame(onRemoved);
           }
         },
       },
@@ -66,11 +70,9 @@ export function RemovePositionButton({
       </DialogTrigger>
       <DialogContent
         onCloseAutoFocus={(event) => {
-          // The trigger no longer exists after a removal.
-          if (gone.current) {
-            event.preventDefault();
-            onRemoved();
-          }
+          // The trigger no longer exists after a removal: `onRemoved` (called on success) moves
+          // focus; do not let the dialog restore it to a stale element.
+          if (gone.current) event.preventDefault();
         }}
       >
         <DialogHeader>

@@ -1,71 +1,65 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { PositionsListOutput } from '@waddlers/contracts';
 import { toast } from 'react-toastify';
 import { orpc } from '@/lib/orpc';
 import { spaceFailureKind, writeFailureMessage } from './errors';
+import { pendingWrites, setQuantityMutationOptions, writeMeta } from './set-quantity';
 
 /** Positions of a space. Always refetched on mount (no stale list after a navigation). */
 export function usePositionsQuery(spaceId: string) {
   return useQuery(orpc.positions.list.queryOptions({ input: { spaceId }, staleTime: 0 }));
 }
 
-function useRefreshAfterWrite(spaceId: string) {
+function useInvalidateSpaceData(spaceId: string) {
   const queryClient = useQueryClient();
-  return () =>
-    Promise.all([
-      queryClient.invalidateQueries({ queryKey: orpc.positions.list.key({ input: { spaceId } }) }),
-      queryClient.invalidateQueries({ queryKey: orpc.spaces.list.key() }),
-    ]);
+  return () => {
+    void queryClient.invalidateQueries({
+      queryKey: orpc.positions.list.key({ input: { spaceId } }),
+    });
+    void queryClient.invalidateQueries({ queryKey: orpc.spaces.list.key() });
+  };
 }
 
 /**
- * Optimistic quantity update with rollback. FORBIDDEN and generic failures toast a French
- * message; NOT_FOUND (position/space gone) refreshes quietly.
+ * Optimistic quantity update of one position (see `setQuantityMutationOptions` for the
+ * ordering, rollback and refetch rules). FORBIDDEN and generic failures toast a French message;
+ * NOT_FOUND (position/space gone) refreshes quietly.
  */
-export function useSetQuantity(spaceId: string, onSaved?: (message: string) => void) {
+export function useSetQuantity(spaceId: string, positionId: string, onSaved?: () => void) {
   const queryClient = useQueryClient();
-  const refresh = useRefreshAfterWrite(spaceId);
-  const listKey = orpc.positions.list.queryKey({ input: { spaceId } });
+  const invalidate = useInvalidateSpaceData(spaceId);
+  const base = orpc.positions.setQuantity.mutationOptions();
   return useMutation(
-    orpc.positions.setQuantity.mutationOptions({
-      onMutate: async ({ positionId, quantity }) => {
-        await queryClient.cancelQueries({ queryKey: listKey });
-        const previous = queryClient.getQueryData<PositionsListOutput>(listKey);
-        if (previous) {
-          queryClient.setQueryData<PositionsListOutput>(listKey, {
-            ...previous,
-            rows: previous.rows.map((r) => (r.id === positionId ? { ...r, quantity } : r)),
-          });
-        }
-        return { previous };
-      },
-      onError: (error, _vars, context) => {
-        if (context?.previous) queryClient.setQueryData(listKey, context.previous);
-        if (spaceFailureKind(error) !== 'not_found') toast.error(writeFailureMessage(error));
-      },
-      onSuccess: () => {
-        toast.success('Quantité mise à jour.');
-        onSaved?.('Quantité mise à jour.');
-      },
-      onSettled: () => refresh(),
+    setQuantityMutationOptions({
+      queryClient,
+      spaceId,
+      positionId,
+      listKey: orpc.positions.list.queryKey({ input: { spaceId } }),
+      mutationKey: base.mutationKey ?? [],
+      mutationFn: (vars) => orpc.positions.setQuantity.call(vars),
+      notify: { success: (m) => toast.success(m), error: (m) => toast.error(m) },
+      invalidate,
+      ...(onSaved ? { onSaved } : {}),
     }),
   );
 }
 
-export function useRemovePosition(spaceId: string) {
-  const refresh = useRefreshAfterWrite(spaceId);
+export function useRemovePosition(spaceId: string, positionId: string) {
+  const queryClient = useQueryClient();
+  const invalidate = useInvalidateSpaceData(spaceId);
   return useMutation(
     orpc.positions.remove.mutationOptions({
+      meta: writeMeta(spaceId, positionId),
       onSuccess: () => toast.success('Titre retiré de l’espace.'),
       onError: (error) => {
         if (spaceFailureKind(error) !== 'not_found') toast.error(writeFailureMessage(error));
       },
       // Not awaited: the row disappears on refetch, and the caller's callbacks (close the
-      // dialog, move focus) must run while the row's component is still mounted.
+      // dialog, move focus) must run while the row's component is still mounted. Skipped while
+      // another write is in flight so a refetch cannot overwrite an optimistic value.
       onSettled: () => {
-        void refresh();
+        if (pendingWrites(queryClient, spaceId) <= 1) invalidate();
       },
     }),
   );
