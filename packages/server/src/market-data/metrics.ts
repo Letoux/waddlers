@@ -1,6 +1,9 @@
 import {
+  DEFAULT_TOLERANCE_DAYS,
   Decimal,
   PERIODS,
+  addDays,
+  addMonths,
   compareDates,
   computePerformance,
   convert,
@@ -13,30 +16,34 @@ import {
   type PlainDate,
   type PricePoint,
 } from '@waddlers/domain';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, getTableColumns, inArray, sql } from 'drizzle-orm';
 import type { Database } from '../db/create';
 import { PERF_SCALE, PRICE_SCALE, exchanges, listingMetrics, listings } from '../db/schema';
+import { describeError } from '../errors';
 import type { MarketDataConfig } from './config';
 import { localDate } from './dates';
 import {
-  fxRateOnOrBefore,
-  heldListingIds,
-  readBars,
-  readFetchStates,
-  readQuotes,
-} from './repository';
+  closesFrom,
+  firstCloseAfterCompleteFrom,
+  fxRatesBetween,
+  latestCloseBefore,
+  latestClosePerListing,
+} from './metrics-reads';
+import { heldListingIds, readFetchStates, readQuotes } from './repository';
+import { silentLogger, type MarketLogger } from './types';
 
 /**
  * `listing_metrics` materialization. All arithmetic is the domain module's (computePerformance,
  * convert): this file only selects inputs and rounds for storage. It never calls a provider.
  *
- * END PRICE RULE. Let `quoteDate` be the exchange-local date of the latest quote's provider
- * timestamp and `closeDate` the date of the latest stored daily close (in the listing's
- * currency). The end price is the QUOTE when `quoteDate >= closeDate` (the quote is at least as
- * recent as the last close; ties go to the fresher timestamp), otherwise the latest CLOSE. The
- * as-of date used for every performance period is the date of the chosen price. With no close
- * the quote is used, with no quote the close; with neither, the price is NULL and every period
- * is unavailable (`end_missing`).
+ * END PRICE RULE (D21, following D20 "on ne ment pas sur la donnee"). The official daily close
+ * for a date ALWAYS wins. Let `quoteDate` be the exchange-local date of the latest quote's
+ * provider timestamp and `closeDate` the date of the latest stored daily close (in the listing's
+ * currency). The end price is the latest CLOSE unless no close exists for a date on or after
+ * `quoteDate` (`closeDate < quoteDate`, or no close at all): only then is the QUOTE used, until
+ * that day's close arrives. The as-of date used for every performance period is the date of the
+ * chosen price. With no quote the close is used; with neither, the price is NULL and every
+ * period is unavailable (`end_missing`).
  *
  * FX RULE. price_eur = domain `convert` of the end price with the latest stored EUR-based rate
  * dated on or before the as-of date and at most `fxToleranceDays` older. Otherwise price_eur is
@@ -88,7 +95,8 @@ export function selectEndPrice(input: EndPriceInput): EndPrice | null {
   const quotePrice = input.quote ? parseDecimal(input.quote.price) : null;
   if (input.quote && quotePrice && quotePrice.gt(0)) {
     const date = localDate(input.quote.asOf, input.timezone);
-    if (!latestClose || compareDates(date, latestClose.date) >= 0) {
+    // D21: a close dated on/after the quote's day wins (ties go to the official close).
+    if (!latestClose || compareDates(date, latestClose.date) > 0) {
       return { price: quotePrice, asOfDate: date, basis: 'quote', priceAsOf: input.quote.asOf };
     }
   }
@@ -169,15 +177,38 @@ export function computeMetricsValues(input: MetricsInput): MetricsValues {
     const stored = store(result.value, PERF_SCALE);
     values[key] = stored;
     values[`${key}BaseDate`] = stored === null ? null : result.baseDate;
-    values[`${key}Reason`] =
-      stored === null ? ('reason' in result ? result.reason : 'rounds_to_zero') : null;
+    // A non-null domain value always stores as a (possibly 0.00000000) string, never null.
+    values[`${key}Reason`] = result.value === null ? result.reason : null;
   }
   return values as MetricsValues;
+}
+
+const RECOMPUTE_CHUNK = 500;
+
+type CloseRow = { date: PlainDate; close: string };
+
+/** Lower bound of the rows a listing needs: 60 months (the longest fixed period) + base tolerance. */
+export function windowStart(asOf: PlainDate): PlainDate {
+  return addDays(addMonths(asOf, -60), -DEFAULT_TOLERANCE_DAYS);
+}
+
+interface Prepared {
+  listing: { id: string; currency: string; timezone: string };
+  base: EndPriceInput;
+  end: EndPrice | null;
 }
 
 /**
  * Recomputes `listing_metrics` for the given listings (default: every held listing). Idempotent:
  * same inputs, same rows (only `computed_at` moves). Reads Postgres only.
+ *
+ * Reads are batched over the listings and bounded: per listing only the rows from
+ * `asOf - 60 months - tolerance` on, the latest close before that window (so a base lookup
+ * fails for the same reason as with the full series) and the first close on/after
+ * `history_complete_from` (the `max` base). The result equals the unbounded computation.
+ *
+ * Failures are isolated per listing: one that cannot be computed (bad timezone, bad data) is
+ * logged and counted in `failed`, the others are still stored.
  */
 export async function recomputeListingMetrics(
   db: Database,
@@ -185,53 +216,188 @@ export async function recomputeListingMetrics(
     listingIds?: readonly string[];
     now: Date;
     config: Pick<MarketDataConfig, 'fxToleranceDays'>;
+    logger?: MarketLogger;
   },
-): Promise<{ computed: number }> {
+): Promise<{ computed: number; failed: number }> {
   const ids = options.listingIds ? [...new Set(options.listingIds)] : await heldListingIds(db);
-  if (ids.length === 0) return { computed: 0 };
+  const total = { computed: 0, failed: 0 };
+  const log = options.logger ?? silentLogger;
+  for (let i = 0; i < ids.length; i += RECOMPUTE_CHUNK) {
+    const part = await recomputeChunk(db, ids.slice(i, i + RECOMPUTE_CHUNK), options, log);
+    total.computed += part.computed;
+    total.failed += part.failed;
+  }
+  return total;
+}
 
+async function recomputeChunk(
+  db: Database,
+  ids: string[],
+  options: { now: Date; config: Pick<MarketDataConfig, 'fxToleranceDays'> },
+  log: MarketLogger,
+): Promise<{ computed: number; failed: number }> {
   const meta = await db
     .select({ id: listings.id, currency: listings.currency, timezone: exchanges.timezone })
     .from(listings)
     .innerJoin(exchanges, eq(exchanges.mic, listings.exchangeMic))
     .where(inArray(listings.id, ids));
-  const quotes = await readQuotes(db, ids);
-  const historyStates = await readFetchStates(db, ids, 'history');
-  const rateCache = new Map<string, { date: PlainDate; ratePerEur: string } | null>();
+  const [quotes, historyStates, latest, firsts] = await Promise.all([
+    readQuotes(db, ids),
+    readFetchStates(db, ids, 'history'),
+    latestClosePerListing(db, ids),
+    firstCloseAfterCompleteFrom(db, ids),
+  ]);
 
-  let computed = 0;
+  let failed = 0;
+  const fail = (id: string, error: unknown) => {
+    failed += 1;
+    log.error('listing metrics failed', { listingId: id, error: describeError(error) });
+  };
+
+  // Phase 1: the end price decides each listing's as-of date, hence its window.
+  const prepared: Prepared[] = [];
   for (const listing of meta) {
-    // Closes stored in another currency than the listing's current one are never mixed in.
-    const closes = (await readBars(db, listing.id)).filter((b) => b.currency === listing.currency);
-    const q = quotes.get(listing.id);
-    const base: EndPriceInput = {
-      currency: listing.currency,
-      timezone: listing.timezone,
-      closes,
-      quote: q && q.currency === listing.currency ? { price: q.price, asOf: q.asOf } : null,
-    };
+    try {
+      const q = quotes.get(listing.id);
+      const lastClose = latest.get(listing.id);
+      const base: EndPriceInput = {
+        currency: listing.currency,
+        timezone: listing.timezone,
+        closes: lastClose ? [lastClose] : [],
+        quote: q && q.currency === listing.currency ? { price: q.price, asOf: q.asOf } : null,
+      };
+      prepared.push({ listing, base, end: selectEndPrice(base) });
+    } catch (error) {
+      fail(listing.id, error);
+    }
+  }
+
+  // Phase 2: one bounded window read (shared lower bound, trimmed per listing below).
+  const bounds = prepared.flatMap((p) => (p.end ? [windowStart(p.end.asOfDate)] : []));
+  const minStart = bounds.reduce<PlainDate | null>(
+    (min, d) => (min === null || compareDates(d, min) < 0 ? d : min),
+    null,
+  );
+  const windowRows = new Map<string, CloseRow[]>();
+  let anchors = new Map<string, CloseRow>();
+  if (minStart !== null) {
+    const priced = prepared.filter((p) => p.end).map((p) => p.listing.id);
+    for (const r of await closesFrom(db, priced, minStart)) {
+      const list = windowRows.get(r.listingId) ?? [];
+      list.push(r);
+      windowRows.set(r.listingId, list);
+    }
+    anchors = await latestCloseBefore(db, priced, minStart);
+  }
+
+  const fxLookup = await loadFxRates(db, prepared, options.config.fxToleranceDays);
+
+  const rows: (typeof listingMetrics.$inferInsert)[] = [];
+  for (const { listing, base, end } of prepared) {
+    try {
+      const closes = end
+        ? boundedSeries(
+            windowStart(end.asOfDate),
+            windowRows.get(listing.id) ?? [],
+            anchors.get(listing.id),
+            firsts.get(listing.id),
+          )
+        : [];
+      const values = computeMetricsValues({
+        ...base,
+        closes,
+        historyCompleteFrom: historyStates.get(listing.id)?.historyCompleteFrom ?? null,
+        fxRate: fxLookup,
+      });
+      rows.push({ listingId: listing.id, computedAt: options.now, ...values });
+    } catch (error) {
+      fail(listing.id, error);
+    }
+  }
+  const stored = await upsertMetricsRows(db, rows, (id, error) => fail(id, error));
+  return { computed: stored, failed };
+}
+
+/** Rows a listing needs: window bars, the anchor just below the window, the `max` base bar. */
+function boundedSeries(
+  start: PlainDate,
+  window: readonly CloseRow[],
+  anchor: CloseRow | undefined,
+  first: CloseRow | undefined,
+): CloseRow[] {
+  const inWindow = window.filter((r) => compareDates(r.date, start) >= 0);
+  const below = window.filter((r) => compareDates(r.date, start) < 0);
+  const lowest = below.length > 0 ? below[below.length - 1] : anchor;
+  const series = [...(lowest ? [lowest] : []), ...inWindow];
+  if (first && !series.some((r) => r.date === first.date)) series.unshift(first);
+  return series.sort((a, b) => compareDates(a.date, b.date));
+}
+
+/**
+ * Rate lookup over the batch: one query per currency for the dates involved, then the latest
+ * stored rate on or before the price date within `fxToleranceDays` (never carried further).
+ */
+async function loadFxRates(
+  db: Database,
+  prepared: readonly Prepared[],
+  toleranceDays: number,
+): Promise<MetricsInput['fxRate']> {
+  const dates = new Map<string, PlainDate[]>();
+  for (const { listing, end } of prepared) {
     const major = normalizeCurrency(listing.currency)?.currency;
-    const end = selectEndPrice(base);
-    if (end && major && major !== 'EUR') {
-      const key = `${major}|${end.asOfDate}`;
-      if (!rateCache.has(key)) {
-        const found = await fxRateOnOrBefore(db, major, end.asOfDate);
-        const usable =
-          found && diffDays(found.date, end.asOfDate) <= options.config.fxToleranceDays;
-        rateCache.set(key, usable ? found : null);
+    if (!end || !major || major === 'EUR') continue;
+    dates.set(major, [...(dates.get(major) ?? []), end.asOfDate]);
+  }
+  const found = new Map<string, { date: PlainDate; ratePerEur: string } | null>();
+  for (const [currency, list] of dates) {
+    const sorted = [...list].sort(compareDates);
+    const rates = await fxRatesBetween(
+      db,
+      currency,
+      addDays(sorted[0]!, -toleranceDays),
+      sorted[sorted.length - 1]!,
+    );
+    for (const date of sorted) {
+      let best: { date: PlainDate; ratePerEur: string } | null = null;
+      for (const r of rates) if (compareDates(r.date, date) <= 0) best = r;
+      const usableRate = best && diffDays(best.date, date) <= toleranceDays ? best : null;
+      found.set(`${currency}|${date}`, usableRate);
+    }
+  }
+  return (currency, date) => found.get(`${currency}|${date}`) ?? null;
+}
+
+/** Batched upsert; if a batch fails, falls back to row by row so one bad row cannot sink the rest. */
+async function upsertMetricsRows(
+  db: Database,
+  rows: readonly (typeof listingMetrics.$inferInsert)[],
+  onRowError: (listingId: string, error: unknown) => void,
+): Promise<number> {
+  if (rows.length === 0) return 0;
+  const cols = getTableColumns(listingMetrics);
+  const set = Object.fromEntries(
+    Object.entries(cols)
+      .filter(([key]) => key !== 'listingId')
+      .map(([key, col]) => [key, sql.raw(`excluded."${col.name}"`)]),
+  );
+  const upsert = (part: readonly (typeof listingMetrics.$inferInsert)[]) =>
+    db
+      .insert(listingMetrics)
+      .values([...part])
+      .onConflictDoUpdate({ target: listingMetrics.listingId, set });
+  try {
+    await upsert(rows);
+    return rows.length;
+  } catch {
+    let stored = 0;
+    for (const row of rows) {
+      try {
+        await upsert([row]);
+        stored += 1;
+      } catch (error) {
+        onRowError(row.listingId, error);
       }
     }
-    const values = computeMetricsValues({
-      ...base,
-      historyCompleteFrom: historyStates.get(listing.id)?.historyCompleteFrom ?? null,
-      fxRate: (currency, date) => rateCache.get(`${currency}|${date}`) ?? null,
-    });
-    const row = { listingId: listing.id, computedAt: options.now, ...values };
-    await db
-      .insert(listingMetrics)
-      .values(row)
-      .onConflictDoUpdate({ target: listingMetrics.listingId, set: row });
-    computed += 1;
+    return stored;
   }
-  return { computed };
 }

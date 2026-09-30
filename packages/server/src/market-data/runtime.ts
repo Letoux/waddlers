@@ -1,5 +1,5 @@
 import type { Database } from '../db/create';
-import type { MarketDataEnv } from '../env';
+import type { WorkerMarketDataEnv } from '../env';
 import { marketDataConfigFromEnv, type MarketDataConfig } from './config';
 import { EcbFxProvider } from './ecb-fx';
 import { EodhdStubProvider } from './eodhd-stub';
@@ -23,7 +23,7 @@ export interface MarketDataRuntime {
   /** Guarded providers (concurrency, timeout, retry, quota, redaction). */
   provider: MarketDataProvider;
   fx: FxProvider;
-  recomputeMetrics(listingIds?: readonly string[]): Promise<{ computed: number }>;
+  recomputeMetrics(listingIds?: readonly string[]): Promise<{ computed: number; failed: number }>;
   clock: Clock;
   logger: MarketLogger;
 }
@@ -43,7 +43,7 @@ export interface RuntimeOverrides {
 /** Wires providers -> guard -> service -> metrics for the worker, the CLI and (later) the web app. */
 export function createMarketDataRuntime(
   db: Database,
-  env: MarketDataEnv,
+  env: WorkerMarketDataEnv,
   overrides: RuntimeOverrides = {},
 ): MarketDataRuntime {
   const clock = overrides.clock ?? (() => new Date());
@@ -91,6 +91,7 @@ export function createMarketDataRuntime(
       ...(listingIds ? { listingIds } : {}),
       now: clock(),
       config,
+      logger,
     });
   const service = new MarketDataService({
     db,

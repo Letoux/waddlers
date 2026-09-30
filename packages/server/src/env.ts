@@ -35,8 +35,6 @@ function boundedInt(min: number, max: number, fallback: number) {
 export const marketDataEnvShape = {
   MARKET_DATA_PROVIDER: z.preprocess(emptyToUndefined, z.enum(['fake', 'eodhd']).default('fake')),
   FX_PROVIDER: z.preprocess(emptyToUndefined, z.enum(['fake', 'ecb']).default('fake')),
-  /** Provider credential. Never logged, never echoed by validation errors. */
-  EODHD_API_TOKEN: z.preprocess(emptyToUndefined, z.string().min(8).max(256).optional()),
   MARKET_DATA_QUOTE_TTL_MINUTES: boundedInt(1, 24 * 60, 15),
   MARKET_DATA_HISTORY_TTL_HOURS: boundedInt(1, 24 * 14, 12),
   MARKET_DATA_FX_TTL_HOURS: boundedInt(1, 24 * 14, 12),
@@ -48,6 +46,16 @@ export const marketDataEnvShape = {
 
 export const marketDataEnvSchema = z.object(marketDataEnvShape);
 export type MarketDataEnv = z.infer<typeof marketDataEnvSchema>;
+
+/**
+ * Provider credential: WORKER/CLI ONLY. The web process never calls a provider, so its env
+ * schema neither accepts nor requires it (zod strips it: it can never reach `getEnv()` output).
+ * Never logged, never echoed by validation errors.
+ */
+export const workerSecretsShape = {
+  EODHD_API_TOKEN: z.preprocess(emptyToUndefined, z.string().min(8).max(256).optional()),
+} as const;
+export type WorkerMarketDataEnv = MarketDataEnv & { EODHD_API_TOKEN?: string | undefined };
 
 // Refinement messages are static on purpose: a failing value (which may embed a
 // password) must never be echoed back.
@@ -118,6 +126,7 @@ export function parseEnv(source: Record<string, string | undefined>): Env {
 export const workerEnvSchema = z.object({
   DATABASE_URL: z.string().refine(isPostgresUrl, 'must be a postgres:// or postgresql:// URL'),
   ...marketDataEnvShape,
+  ...workerSecretsShape,
 });
 export type WorkerEnv = z.infer<typeof workerEnvSchema>;
 

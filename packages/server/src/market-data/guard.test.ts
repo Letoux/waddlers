@@ -173,7 +173,7 @@ describe('CallGuard quota', () => {
     expect((await g.run('op', call)).ok).toBe(true);
     expect((await g.run('op', call)).ok).toBe(true);
     const refused = await g.run('op', call);
-    expect(refused).toMatchObject({ ok: false, code: 'quota_exceeded' });
+    expect(refused).toMatchObject({ ok: false, code: 'local_quota' });
     expect(call).toHaveBeenCalledTimes(2);
   });
 
@@ -189,7 +189,7 @@ describe('CallGuard quota', () => {
       usage: { reserve: () => Promise.reject(new Error('db down')) },
     });
     const call = vi.fn().mockResolvedValue(good());
-    expect(await g.run('op', call)).toMatchObject({ ok: false, code: 'quota_exceeded' });
+    expect(await g.run('op', call)).toMatchObject({ ok: false, code: 'local_quota' });
     expect(call).not.toHaveBeenCalled();
   });
 });
@@ -226,6 +226,32 @@ describe('secret redaction', () => {
     };
     const result = await guardMarketDataProvider(raw, g).getQuotes([listing]);
     expect(result).toMatchObject({ ok: false, message: 'bad api_token=[REDACTED]' });
+  });
+
+  it('redacts the percent-encoded and base64 forms of a configured secret', () => {
+    const secret = 'p@ss/w+rd=1&x';
+    const b64 = Buffer.from(secret).toString('base64');
+    const b64url = b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    for (const leaked of [
+      encodeURIComponent(secret),
+      b64,
+      b64.replace(/=+$/, ''),
+      b64url,
+      secret,
+    ]) {
+      const out = redactSecrets(`GET /x?v=${leaked} failed`, [secret]);
+      expect(out).not.toContain(leaked);
+      expect(out).toContain('[REDACTED]');
+    }
+  });
+
+  it('redacts param values after a percent-encoded equals sign and Basic credentials', () => {
+    expect(redactSecrets('u?api_token%3Dabc123&x=1')).toBe('u?api_token%3D[REDACTED]&x=1');
+    expect(redactSecrets('u?apikey%3dabc123')).toBe('u?apikey%3d[REDACTED]');
+    const out = redactSecrets('Authorization: Basic dXNlcjpwYXNz next');
+    expect(out).not.toContain('dXNlcjpwYXNz');
+    expect(redactSecrets('basic   dXNlcjpwYXNz==')).not.toContain('dXNlcjpwYXNz');
+    expect(redactSecrets('nothing to see')).toBe('nothing to see');
   });
 
   it('redactSecrets handles bearer tokens, header style and short secrets', () => {

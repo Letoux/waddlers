@@ -27,7 +27,10 @@ export const PROVIDER_ERROR_CODES = [
   'network',
   'rate_limited',
   'upstream_error',
+  /** The provider itself refused (plan quota reached upstream): backs off. */
   'quota_exceeded',
+  /** OUR daily budget (`provider_usage`) refused the call before any request: no backoff. */
+  'local_quota',
   'unauthorized',
   'not_found',
   'bad_payload',
@@ -81,6 +84,8 @@ export interface DailyBar {
 
 export interface HistoryBatch {
   bars: DailyBar[];
+  /** Currency the provider states for every bar (raw, minor units included). Checked against the listing's. */
+  currency: string;
   /** Number of provider rows dropped because a field was invalid (zero, negative, NaN, missing). */
   rejectedRows: number;
   /**

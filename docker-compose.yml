@@ -86,6 +86,15 @@ services:
     profiles: ['app']
     restart: unless-stopped
     stop_grace_period: 40s
+    # Hardening: immutable root filesystem (tsx only needs a scratch /tmp for its transpile
+    # cache), no Linux capabilities, no privilege escalation.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     environment:
       DATABASE_URL: postgres://waddlers_app:${APP_DB_PASSWORD:-}@postgres:5432/${POSTGRES_DB:-waddlers}
       MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-fake}

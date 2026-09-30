@@ -143,12 +143,10 @@ export async function rotateSession(
 
 /**
  * Global housekeeping (worker, nightly): drops every expired session, for all users. Uses
- * `sessions_expires_at_idx`. Idempotent. Returns the number of rows deleted.
+ * `sessions_expires_at_idx` and the database clock. Idempotent. Returns only the row count.
  */
-export async function purgeAllExpiredSessions(db: Executor, now: Date): Promise<number> {
-  const deleted = await db
-    .delete(sessions)
-    .where(lt(sessions.expiresAt, now))
-    .returning({ id: sessions.id });
-  return deleted.length;
+export async function purgeAllExpiredSessions(db: Executor): Promise<number> {
+  // The database clock decides (`now()`): no application clock skew, no ids returned to memory.
+  const result = await db.delete(sessions).where(sql`${sessions.expiresAt} < now()`);
+  return result.count;
 }

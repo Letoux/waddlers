@@ -2,6 +2,7 @@ import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { getDb } from '../db/client';
 import {
+  exchanges,
   listingMetrics,
   marketDataFetchState,
   priceDaily,
@@ -15,6 +16,7 @@ import { createPositionRow, createSpaceRow, ensureReferenceData } from '../../te
 import { releaseTestEnv, useTestEnv } from '../../test/auth-harness';
 import { TestClock, resetMarketTables } from '../../test/market-fixtures';
 import { refreshHeldQuotes, refreshMarket, runNightly } from './jobs';
+import { upsertQuotes } from './repository';
 import { FakeMarketDataProvider } from './fake-provider';
 import { FakeFxProvider } from './fx-fake';
 import { createMarketDataRuntime } from './runtime';
@@ -91,18 +93,19 @@ describe('runNightly (end to end with the fake providers)', () => {
       .insert(users)
       .values({ username: 'nightly', passwordHash: 'x' })
       .returning();
-    const session = (hash: string, expiresAt: string) => ({
+    // The purge uses the database clock: expiries are relative to the real time.
+    const session = (hash: string, offsetMs: number) => ({
       userId: user!.id,
       tokenHash: hash.repeat(64).slice(0, 64),
-      expiresAt: new Date(expiresAt),
+      expiresAt: new Date(Date.now() + offsetMs),
     });
     await getDb()
       .insert(sessions)
       .values([
-        session('a', '2026-09-29T00:00:00Z'),
-        session('b', '2026-09-30T12:59:59Z'),
-        session('c', '2026-09-30T13:00:01Z'),
-        session('d', '2026-12-01T00:00:00Z'),
+        session('a', -86_400_000),
+        session('b', -60_000),
+        session('c', 3_600_000),
+        session('d', 30 * 86_400_000),
       ]);
 
     const rt = runtime();
@@ -162,6 +165,58 @@ describe('runNightly (end to end with the fake providers)', () => {
   });
 });
 
+describe('runNightly really pulls (review P2-2, P2-3)', () => {
+  it('a history/FX refresh 5 h earlier does not make the nightly skip (12 h TTL)', async () => {
+    const rt = runtime();
+    await refreshMarket({ db: getDb(), runtime: rt }, { scopes: ['history', 'fx'] });
+    const calls = provider.calls.history;
+    clock.advance(5 * 3_600_000);
+    const result = await runNightly({ db: getDb(), runtime: rt });
+    expect(result.history).toMatchObject({ refreshed: 2, skipped_fresh: 0 });
+    expect(result.fx).toBe('refreshed');
+    expect(provider.calls.history).toBe(calls + 2);
+  });
+
+  it('a listing whose metrics cannot be computed does not stop the others nor the session purge', async () => {
+    const [user] = await getDb()
+      .insert(users)
+      .values({ username: 'isolated', passwordHash: 'x' })
+      .returning();
+    await getDb()
+      .insert(sessions)
+      .values({
+        userId: user!.id,
+        tokenHash: 'e'.repeat(64),
+        expiresAt: new Date(Date.now() - 60_000),
+      });
+    // A quote plus an unusable exchange timezone makes SHEL's end-price date impossible to compute.
+    await getDb()
+      .update(exchanges)
+      .set({ timezone: 'Not/A_Zone' })
+      .where(eq(exchanges.mic, 'XLON'));
+    const rt = runtime();
+    await upsertQuotes(
+      getDb(),
+      [
+        {
+          listingId: ids.shel.listingId,
+          price: '2450',
+          currency: 'GBX',
+          asOf: new Date('2026-09-30T10:00:00Z'),
+        },
+      ],
+      { source: 'fake', fetchedAt: clock.now() },
+    );
+    const result = await runNightly({ db: getDb(), runtime: rt });
+    expect(result.metrics).toBe(1);
+    expect(result.metricsFailed).toBe(1);
+    expect(result.purgedSessions).toBe(1);
+    expect((await getDb().select().from(listingMetrics)).map((r) => r.listingId)).toEqual([
+      ids.ai.listingId,
+    ]);
+  });
+});
+
 describe('refreshMarket (operator command)', () => {
   it('forces past the TTL for a single listing but honours the backoff', async () => {
     const rt = runtime();
@@ -202,20 +257,17 @@ describe('purgeAllExpiredSessions', () => {
       .insert(users)
       .values({ username: 'purge', passwordHash: 'x' })
       .returning();
-    const mk = (c: string, expiresAt: string) => ({
+    // The purge uses the database clock (now()), so expiries are relative to the real time.
+    const mk = (c: string, offsetMs: number) => ({
       userId: user!.id,
       tokenHash: c.repeat(64),
-      expiresAt: new Date(expiresAt),
+      expiresAt: new Date(Date.now() + offsetMs),
     });
     await getDb()
       .insert(sessions)
-      .values([
-        mk('1', '2026-09-30T12:00:00Z'),
-        mk('2', '2026-09-30T13:00:00Z'),
-        mk('3', '2026-10-30T00:00:00Z'),
-      ]);
-    expect(await purgeAllExpiredSessions(getDb(), clock.now())).toBe(1); // expiresAt == now is not yet expired
-    expect(await purgeAllExpiredSessions(getDb(), clock.now())).toBe(0);
+      .values([mk('1', -3_600_000), mk('2', 3_600_000), mk('3', 30 * 86_400_000)]);
+    expect(await purgeAllExpiredSessions(getDb())).toBe(1);
+    expect(await purgeAllExpiredSessions(getDb())).toBe(0);
     expect(
       await getDb()
         .select({ n: sql<number>`count(*)::int` })
@@ -225,7 +277,7 @@ describe('purgeAllExpiredSessions', () => {
 });
 
 describe('startWorker', () => {
-  it('runs nightly then quotes on start, never overlaps a job, and stop() waits for the running job', async () => {
+  it('runs nightly then quotes on start and stop() waits for the running job', async () => {
     const rt = runtime();
     const timers: { fn: () => void; ms: number }[] = [];
     const worker = startWorker({
@@ -247,6 +299,42 @@ describe('startWorker', () => {
     expect(timers.some((t) => t.ms === 14.5 * 3_600_000)).toBe(true);
     expect(worker.lock.isRunning('nightly')).toBe(false);
     expect(worker.lock.isRunning('quotes')).toBe(false);
+  });
+
+  it('a nightly timer firing while the nightly still runs is skipped: no overlapping runs', async () => {
+    const rt = runtime();
+    let active = 0;
+    let peak = 0;
+    const original = provider.getDailyHistory.bind(provider);
+    provider.getDailyHistory = async (...args) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 30));
+      try {
+        return await original(...args);
+      } finally {
+        active -= 1;
+      }
+    };
+    const warnings: string[] = [];
+    const timers: (() => void)[] = [];
+    const worker = startWorker({
+      ctx: { db: getDb(), runtime: rt },
+      logger: { info() {}, warn: (m) => warnings.push(m), error() {} },
+      setTimer: ((fn: () => void) => {
+        timers.push(fn);
+        return { unref() {} } as unknown as ReturnType<typeof setTimeout>;
+      }) as unknown as typeof setTimeout,
+      clearTimer: (() => {}) as typeof clearTimeout,
+    });
+    for (let i = 0; i < 100 && !worker.lock.isRunning('nightly'); i += 1)
+      await new Promise((r) => setTimeout(r, 5));
+    expect(worker.lock.isRunning('nightly')).toBe(true);
+    timers[0]!(); // the scheduled 03:30 tick fires while the catch-up nightly is still running
+    await new Promise((r) => setTimeout(r, 20));
+    await worker.stop();
+    expect(warnings).toContain('worker job skipped: previous run still in progress');
+    expect(peak).toBe(1);
   });
 
   it('stop() right after start aborts between listings and returns with no job left running', async () => {

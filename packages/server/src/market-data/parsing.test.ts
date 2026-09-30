@@ -5,7 +5,7 @@ import { normalizeBars, normalizeQuote } from './bars';
 import { EcbFxProvider, parseEcbXml } from './ecb-fx';
 import { FakeMarketDataProvider } from './fake-provider';
 import { FakeFxProvider } from './fx-fake';
-import { toPlainDate, toPositiveDecimalString } from './normalize';
+import { FX_LIMIT, toPlainDate, toPositiveDecimalString } from './normalize';
 import type { ListingRef } from './types';
 
 const fixture = (name: string) =>
@@ -35,9 +35,39 @@ describe('toPositiveDecimalString', () => {
   });
 
   it('keeps decimal precision as a string and never goes through a float', () => {
-    expect(toPositiveDecimalString('123.456789012345678')).toBe('123.456789012345678');
+    expect(toPositiveDecimalString('1234567890123456.12345678')).toBe('1234567890123456.12345678');
     expect(toPositiveDecimalString(0.1)).toBe('0.1');
-    expect(toPositiveDecimalString('1e-7')).not.toBeNull();
+    expect(toPositiveDecimalString('1e-7')).toBe('0.0000001');
+  });
+
+  it.each([
+    ['1e-9 (rounds to 0 at scale 8)', '1e-9'],
+    ['5e-9 (half-even would give 0)', '5e-9'],
+    ['0.123456789 (9 decimals)', '0.123456789'],
+    ['1e17 (17 integer digits)', '1e17'],
+    ['16+1 integer digits', '12345678901234567'],
+    ['exponent expanding far past the bounds', '1e999999999'],
+    ['tiny exponent', '1e-999999999'],
+    ['absurdly long literal', `1${'0'.repeat(200)}`],
+  ])('price scale: rejects %s', (_name, value) => {
+    expect(toPositiveDecimalString(value)).toBeNull();
+    expect(toPositiveDecimalString(Number(value))).toBeNull();
+  });
+
+  it('price scale: accepts the extremes that fit numeric(24,8)', () => {
+    expect(toPositiveDecimalString('9999999999999999.99999999')).toBe('9999999999999999.99999999');
+    expect(toPositiveDecimalString('1e-8')).toBe('0.00000001');
+    expect(toPositiveDecimalString('1e15')).toBe('1000000000000000');
+  });
+
+  it('FX scale numeric(20,10): 10 integer digits and 10 decimals', () => {
+    expect(toPositiveDecimalString('1e11', FX_LIMIT)).toBeNull();
+    expect(toPositiveDecimalString('6e-11', FX_LIMIT)).toBeNull();
+    expect(toPositiveDecimalString('1e-10', FX_LIMIT)).toBe('0.0000000001');
+    expect(toPositiveDecimalString('9999999999.9999999999', FX_LIMIT)).toBe(
+      '9999999999.9999999999',
+    );
+    expect(toPositiveDecimalString('1.0887', FX_LIMIT)).toBe('1.0887');
   });
 
   it('rejects impossible dates', () => {
@@ -74,6 +104,9 @@ describe('normalizeBars (field by field)', () => {
     ['impossible date', { date: '2026-02-30' }],
     ['before range', { date: '2026-08-31' }],
     ['after range', { date: '2026-10-01' }],
+    ['a price that would round at the column scale', { close: '1.234567891' }],
+    ['a price overflowing the column', { close: '1e17' }],
+    ['a price rounding to 0', { close: '1e-9' }],
   ])('drops a row with %s (counted, never repaired to 0)', (_name, over) => {
     const r = normalizeBars([row(over), row({ date: '2026-09-11' })], range);
     expect('bars' in r && r.bars.map((b) => b.date)).toEqual(['2026-09-11']);
@@ -85,7 +118,7 @@ describe('normalizeBars (field by field)', () => {
     expect('bars' in r && r.bars[0]).toEqual({ date: '2026-09-10', close: '10.5', adjClose: null });
   });
 
-  it('drops duplicated dates after the first and sorts ascending', () => {
+  it('duplicated dates: the LAST occurrence wins (DOMAIN.md), sorted ascending', () => {
     const r = normalizeBars(
       [
         row({ date: '2026-09-12' }),
@@ -96,9 +129,17 @@ describe('normalizeBars (field by field)', () => {
     );
     expect('bars' in r && r.bars.map((b) => [b.date, b.close])).toEqual([
       ['2026-09-10', '10.5'],
-      ['2026-09-12', '10.5'],
+      ['2026-09-12', '99'],
     ]);
     expect('rejectedRows' in r && r.rejectedRows).toBe(1);
+  });
+
+  it('a later unusable duplicate drops the date entirely (no stale value survives)', () => {
+    const r = normalizeBars(
+      [row({ date: '2026-09-12' }), row({ date: '2026-09-12', close: 0 })],
+      range,
+    );
+    expect(r).toEqual({ bars: [], rejectedRows: 2 });
   });
 
   it('flags a non-array payload as bad_payload', () => {
@@ -205,7 +246,7 @@ describe('ECB parser', () => {
     });
     const keys = batch.rates.map((r) => `${r.date}|${r.currency}|${r.ratePerEur}`);
     expect(keys).toEqual([
-      '2026-09-28|USD|1.1378',
+      '2026-09-28|USD|9.9999', // duplicate: the last occurrence wins
       '2026-09-29|CAD|1.6101',
       '2026-09-29|USD|1.1355',
     ]);
@@ -245,6 +286,70 @@ describe('ECB parser', () => {
     const urls = fetchSpy.mock.calls.map((c) => (c as unknown as [string])[0]);
     expect(urls[0]).toMatch(/eurofxref-hist-90d\.xml$/);
     expect(urls[1]).toMatch(/eurofxref-hist\.xml$/);
+  });
+});
+
+describe('ECB parser hardening', () => {
+  it('many unterminated openers stay fast (no quadratic backtracking)', () => {
+    const opener = '<Cube time="2026-09-29">';
+    const inputs = [
+      opener.repeat(32_000),
+      `${opener.repeat(32_000)}</Cube>`,
+      '<Cube time="2026-09-29"'.repeat(32_000),
+      `<Cube${' '.repeat(50_000)}time="x`.repeat(4),
+    ];
+    for (const xml of inputs) {
+      const started = performance.now();
+      parseEcbXml(xml, range);
+      expect(performance.now() - started).toBeLessThan(200);
+    }
+  });
+
+  it('an FX rate that overflows or would round at numeric(20,10) drops that row only', () => {
+    const xml = `<Cube><Cube time="2026-09-29">
+      <Cube currency="USD" rate="1.1355"/><Cube currency="JPY" rate="1e11"/>
+      <Cube currency="CHF" rate="6e-11"/><Cube currency="GBP" rate="0.12345678901"/></Cube></Cube>`;
+    const batch = parseEcbXml(xml, range);
+    expect(batch.rates.map((r) => r.currency)).toEqual(['USD']);
+    expect(batch.rejectedRows).toBe(3);
+  });
+
+  it('duplicates: the last occurrence wins, an unusable last one drops the pair', () => {
+    const day = (rates: string) => `<Cube time="2026-09-29">${rates}</Cube>`;
+    const usd = (rate: string) => `<Cube currency="USD" rate="${rate}"/>`;
+    const win = parseEcbXml(`<Cube>${day(usd('1.1') + usd('1.2'))}</Cube>`, range);
+    expect(win.rates).toEqual([{ date: '2026-09-29', currency: 'USD', ratePerEur: '1.2' }]);
+    expect(win.rejectedRows).toBe(1);
+    const drop = parseEcbXml(`<Cube>${day(usd('1.1') + usd('N/A'))}</Cube>`, range);
+    expect(drop).toEqual({ rates: [], rejectedRows: 2 });
+  });
+
+  const provider = (response: () => Response) =>
+    new EcbFxProvider({
+      clock: () => new Date('2026-09-30T12:00:00Z'),
+      fetch: vi.fn(async () => response()) as unknown as typeof fetch,
+    });
+
+  it('rejects an oversize CHUNKED body without content-length and stops reading', async () => {
+    let chunks = 0;
+    const chunk = new Uint8Array(1024 * 1024).fill(32);
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        chunks += 1;
+        if (chunks > 64) controller.close();
+        else controller.enqueue(chunk);
+      },
+    });
+    const res = await provider(() => new Response(body)).getDailyRates('2026-09-01', '2026-09-30');
+    expect(res).toMatchObject({ ok: false, code: 'bad_payload', message: 'response too large' });
+    expect(chunks).toBeLessThan(15); // cancelled around the 8 MB cap, not read to the end
+  });
+
+  it('rejects a declared oversize body from content-length alone', async () => {
+    const res = await provider(
+      () => new Response('<Cube/>', { headers: { 'content-length': String(9 * 1024 * 1024) } }),
+    ).getDailyRates('2026-09-01', '2026-09-30');
+    expect(res).toMatchObject({ ok: false, code: 'bad_payload' });
   });
 });
 

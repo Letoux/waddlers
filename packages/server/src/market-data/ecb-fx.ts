@@ -1,6 +1,6 @@
 import { addDays, compareDates, type PlainDate } from '@waddlers/domain';
 import { z } from 'zod';
-import { toPlainDate, toPositiveDecimalString } from './normalize';
+import { FX_LIMIT, toPlainDate, toPositiveDecimalString } from './normalize';
 import { redactSecrets } from './redact';
 import {
   fail,
@@ -24,22 +24,41 @@ import {
  */
 export const ECB_BASE_URL = 'https://www.ecb.europa.eu/stats/eurofxref';
 const HIST_90D_DAYS = 85; // margin under the ~90 calendar days the short file covers
-const MAX_BODY_BYTES = 32 * 1024 * 1024;
+/** The full history file is a few MB; anything bigger is not an ECB rates document. */
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 /** Row shape extracted from the XML, before field validation. */
 const rowSchema = z.object({ date: z.string(), currency: z.string(), rate: z.string() });
 type Row = z.infer<typeof rowSchema>;
 
-/** Extracts (date, currency, rate) triples; anything not matching the Cube shape is ignored. */
+const DAY_OPEN = /<Cube\s+time="([^"]{0,32})"\s*>/g;
+const RATE = /<Cube\s+currency="([^"]{0,16})"\s+rate="([^"]{0,64})"\s*\/>/g;
+const DAY_CLOSE = '</Cube>';
+
+/**
+ * Extracts (date, currency, rate) triples; anything not matching the Cube shape is ignored.
+ * Linear scan: every quantifier is bounded, a day block ends at the first `</Cube>` after its
+ * opener (found with `indexOf`, and the scan resumes after it), and with no closer left the scan
+ * stops: many unterminated openers cannot cause quadratic backtracking.
+ */
 export function extractRows(xml: string): Row[] {
   const rows: Row[] = [];
-  const day = /<Cube\s+time="([^"]*)"\s*>([\s\S]*?)<\/Cube>/g;
-  for (let d = day.exec(xml); d !== null; d = day.exec(xml)) {
-    const rate = /<Cube\s+currency="([^"]*)"\s+rate="([^"]*)"\s*\/>/g;
-    for (let r = rate.exec(d[2] ?? ''); r !== null; r = rate.exec(d[2] ?? '')) {
-      const parsed = rowSchema.safeParse({ date: d[1], currency: r[1], rate: r[2] });
+  const open = new RegExp(DAY_OPEN);
+  let pos = 0;
+  for (;;) {
+    open.lastIndex = pos;
+    const day = open.exec(xml);
+    if (day === null) break;
+    const bodyStart = day.index + day[0].length;
+    const end = xml.indexOf(DAY_CLOSE, bodyStart);
+    if (end === -1) break;
+    const rate = new RegExp(RATE);
+    const body = xml.slice(bodyStart, end);
+    for (let r = rate.exec(body); r !== null; r = rate.exec(body)) {
+      const parsed = rowSchema.safeParse({ date: day[1], currency: r[1], rate: r[2] });
       if (parsed.success) rows.push(parsed.data);
     }
+    pos = end + DAY_CLOSE.length;
   }
   return rows;
 }
@@ -47,31 +66,64 @@ export function extractRows(xml: string): Row[] {
 /**
  * Pure normalization of an ECB XML document to EUR-based rates for [from, to]. Per-field
  * rejection: bad date, currency not `^[A-Z]{3}$` or EUR, rate not a positive finite number
- * (`N/A`, empty, 0, negative, NaN) or duplicated (currency, date) drops that row only.
+ * that fits numeric(20,10) exactly (`N/A`, empty, 0, negative, NaN, overflow, more than 10 decimals)
+ * drops that row only; duplicates: last occurrence wins.
  */
 export function parseEcbXml(xml: string, range: { from: PlainDate; to: PlainDate }): FxBatch {
-  const seen = new Set<string>();
-  const rates: FxBatch['rates'] = [];
+  // Duplicate (date, currency): the LAST occurrence wins, an unusable last one drops the pair
+  // (DOMAIN.md series hygiene). Superseded/dropped earlier rows count as rejected.
+  const byKey = new Map<string, FxBatch['rates'][number]>();
   let rejectedRows = 0;
   for (const row of extractRows(xml)) {
     const date = toPlainDate(row.date);
-    const ratePerEur = toPositiveDecimalString(row.rate);
     const validCurrency = /^[A-Z]{3}$/.test(row.currency) && row.currency !== 'EUR';
-    if (date === null || ratePerEur === null || !validCurrency) {
+    if (date === null || !validCurrency) {
       rejectedRows += 1;
       continue;
     }
     if (compareDates(date, range.from) < 0 || compareDates(date, range.to) > 0) continue;
     const key = `${date}|${row.currency}`;
-    if (seen.has(key)) {
-      rejectedRows += 1;
+    const ratePerEur = toPositiveDecimalString(row.rate, FX_LIMIT);
+    if (ratePerEur === null) {
+      rejectedRows += 1 + (byKey.delete(key) ? 1 : 0);
       continue;
     }
-    seen.add(key);
-    rates.push({ date, currency: row.currency, ratePerEur });
+    if (byKey.has(key)) rejectedRows += 1;
+    byKey.set(key, { date, currency: row.currency, ratePerEur });
   }
+  const rates = [...byKey.values()];
   rates.sort((a, b) => compareDates(a.date, b.date) || a.currency.localeCompare(b.currency));
   return { rates, rejectedRows };
+}
+
+/**
+ * Reads the body as a stream with a running byte counter and cancels it past `maxBytes`, so a
+ * chunked response without (or lying about) content-length can never be buffered whole.
+ */
+export async function readCapped(
+  response: Response,
+  maxBytes: number,
+): Promise<string | 'too_large' | 'unreadable'> {
+  const reader = response.body?.getReader();
+  if (!reader) return 'unreadable';
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return 'too_large';
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } catch {
+    return 'unreadable';
+  }
 }
 
 export interface EcbFxOptions {
@@ -132,13 +184,11 @@ export class EcbFxProvider implements FxProvider {
     }
     const length = Number(response.headers.get('content-length') ?? 0);
     if (length > MAX_BODY_BYTES) return fail(this.name, 'bad_payload', 'response too large');
-    let xml: string;
-    try {
-      xml = await response.text();
-    } catch {
+    const body = await readCapped(response, MAX_BODY_BYTES);
+    if (body === 'too_large') return fail(this.name, 'bad_payload', 'response too large');
+    if (body === 'unreadable')
       return fail(this.name, 'network', 'could not read the response body');
-    }
-    if (xml.length > MAX_BODY_BYTES) return fail(this.name, 'bad_payload', 'response too large');
+    const xml = body;
     if (!xml.includes('<Cube')) return fail(this.name, 'bad_payload', 'not an ECB rates document');
     const batch = parseEcbXml(xml, { from, to });
     // asOf = the latest reference DATE in the batch (date precision; the exact publication time is not in the file).

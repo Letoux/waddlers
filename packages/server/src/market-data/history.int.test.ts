@@ -16,7 +16,8 @@ import {
 } from '../../test/market-fixtures';
 import { readBars } from './repository';
 import { createMarketDataRuntime } from './runtime';
-import { fail } from './types';
+import { sameQuotedCurrency } from './service';
+import { fail, ok } from './types';
 
 beforeAll(useTestEnv);
 afterAll(releaseTestEnv);
@@ -108,6 +109,7 @@ describe('history refresh', () => {
     const served = await svc.getDailyHistory(listingId);
     await svc.idle();
     expect(served.freshness).toBe('stale');
+    expect(served.asOfDate).toBe('2026-09-29'); // plain calendar date of the last bar
     expect(served.data?.bars).toHaveLength(7);
   });
 
@@ -123,6 +125,83 @@ describe('history refresh', () => {
     provider.options.bars = [...BARS, ['2026-10-05', '999']];
     await makeService(provider, clock).refreshHistory(await refFor(listingId));
     expect((await readBars(getDb(), listingId)).some((b) => b.date === '2026-10-05')).toBe(false);
+  });
+});
+
+describe('history batches: row-level drops, currency check, persist errors', () => {
+  it('a bad row (overflow / rounds to zero) is dropped alone; the good rows are stored', async () => {
+    provider.options.bars = [...BARS, ['2026-09-30', '1e17'], ['2026-09-19', '1e-9']];
+    expect(await makeService(provider, clock).refreshHistory(await refFor(listingId))).toBe(
+      'refreshed',
+    );
+    expect((await readBars(getDb(), listingId)).map((b) => b.date)).toEqual(BARS.map(([d]) => d));
+  });
+
+  it('bars stated in another currency than the listing are rejected as bad_payload', async () => {
+    provider.options.historyCurrency = 'USD';
+    expect(await makeService(provider, clock).refreshHistory(await refFor(listingId))).toBe(
+      'failed',
+    );
+    expect(await readBars(getDb(), listingId)).toHaveLength(0);
+    expect(await fetchState()).toMatchObject({ failureCount: 1, lastErrorCode: 'bad_payload' });
+  });
+
+  it('GBX vs GBp is the same unit, GBP vs GBX is not', async () => {
+    expect(sameQuotedCurrency('GBX', 'GBp')).toBe(true);
+    expect(sameQuotedCurrency('GBP', 'GBX')).toBe(false);
+    expect(sameQuotedCurrency('EUR', 'USD')).toBe(false);
+    const shel = (await ensureReferenceData()).shel.listingId;
+    const ref = await refFor(shel);
+    expect(ref.currency).toBe('GBX');
+    provider.options.historyCurrency = 'GBP';
+    expect(await makeService(provider, clock).refreshHistory(ref)).toBe('failed');
+    provider.options.historyCurrency = 'GBp';
+    clock.advance(2 * HOUR); // past the backoff (1 min)
+    expect(await makeService(provider, clock).refreshHistory(ref)).toBe('refreshed');
+    expect((await readBars(getDb(), shel))[0]?.currency).toBe('GBX');
+  });
+
+  it('a deterministic persist error after a good provider call records a bad_payload backoff', async () => {
+    provider.options.source = 'BAD SOURCE!'; // violates price_daily_source_format
+    const svc = makeService(provider, clock);
+    expect(await svc.refreshHistory(await refFor(listingId))).toBe('failed');
+    expect(await fetchState()).toMatchObject({ failureCount: 1, lastErrorCode: 'bad_payload' });
+    expect((await fetchState())?.nextRetryAt?.getTime()).toBe(clock.now().getTime() + 60_000);
+    // inside the window: no provider call
+    expect(await svc.refreshHistory(await refFor(listingId))).toBe('skipped_backoff');
+    expect(provider.historyCalls).toHaveLength(1);
+  });
+
+  it('the same for FX', async () => {
+    const svc = makeService(provider, clock, {
+      name: 'fake',
+      getDailyRates: async () =>
+        ok(
+          'BAD SOURCE!',
+          { rates: [{ date: '2026-09-29', currency: 'USD', ratePerEur: '1.1' }], rejectedRows: 0 },
+          new Date(),
+        ),
+    });
+    expect(await svc.refreshFx({ needFrom: '2026-09-01' })).toBe('failed');
+    const [state] = await getDb()
+      .select()
+      .from(marketDataFetchState)
+      .where(eq(marketDataFetchState.kind, 'fx'));
+    expect(state).toMatchObject({ failureCount: 1, lastErrorCode: 'bad_payload' });
+  });
+
+  it('an FX rate that would overflow numeric(20,10) is dropped, the others are stored', async () => {
+    const svc = makeService(
+      provider,
+      clock,
+      new SpyFx([
+        { date: '2026-09-29', currency: 'USD', ratePerEur: '1.1' },
+        { date: '2026-09-29', currency: 'JPY', ratePerEur: '1e11' },
+        { date: '2026-09-29', currency: 'CHF', ratePerEur: '6e-11' },
+      ]),
+    );
+    expect(await svc.refreshFx({ needFrom: '2026-09-01' })).toBe('refreshed');
+    expect((await getDb().select().from(fxDaily)).map((r) => r.currency)).toEqual(['USD']);
   });
 });
 
@@ -159,7 +238,8 @@ describe('FX refresh', () => {
     expect(fx.calls[1]?.from).toBe('2026-09-24'); // incremental: latest 09-29 - 5d
     expect(await getDb().select().from(fxDaily)).toHaveLength(2);
     const served = await svc.getLatestFx();
-    expect(served).toMatchObject({ freshness: 'fresh', source: 'fake' });
+    expect(served).toMatchObject({ freshness: 'fresh', source: 'fake', asOfDate: '2026-09-29' });
+    expect(served.asOf).toEqual(new Date('2026-09-29T00:00:00Z'));
     expect(served.data?.rates).toEqual([
       { currency: 'USD', date: '2026-09-29', ratePerEur: '1.2000000000' },
     ]);
@@ -173,6 +253,50 @@ describe('FX refresh', () => {
     expect(await svc.refreshFx()).toBe('failed');
     expect(await getDb().select().from(fxDaily)).toHaveLength(0);
     expect((await svc.getLatestFx()).freshness).toBe('unavailable');
+  });
+});
+
+describe('FX backfill coverage', () => {
+  const rates = [
+    { date: '2026-09-28', currency: 'USD', ratePerEur: '1.1' },
+    { date: '2026-09-29', currency: 'USD', ratePerEur: '1.2' },
+  ];
+  const fxState = async () =>
+    (
+      await getDb().select().from(marketDataFetchState).where(eq(marketDataFetchState.kind, 'fx'))
+    )[0];
+
+  it('backfills when the stored coverage is too short, stays incremental when it is enough', async () => {
+    const fx = new SpyFx(rates);
+    const svc = makeService(provider, clock, fx);
+    await svc.refreshFx({ needFrom: '2026-09-01' });
+    expect(fx.calls[0]?.from).toBe('2026-09-01');
+    expect((await fxState())?.historyCompleteFrom).toBe('2026-09-01');
+
+    clock.advance(13 * HOUR);
+    await svc.refreshFx({ needFrom: '2026-09-01' }); // covered: incremental overlap only
+    expect(fx.calls[1]?.from).toBe('2026-09-24');
+
+    // An older need is not covered: backfill from it even though the data is fresh (TTL).
+    expect(await svc.refreshFx({ needFrom: '2026-06-01' })).toBe('refreshed');
+    expect(fx.calls[2]?.from).toBe('2026-06-01');
+    expect((await fxState())?.historyCompleteFrom).toBe('2026-06-01'); // only ever moves earlier
+
+    // A more recent need is covered and fresh: nothing to fetch.
+    expect(await svc.refreshFx({ needFrom: '2026-08-01' })).toBe('skipped_fresh');
+    expect(fx.calls).toHaveLength(3);
+  });
+
+  it('clamps the need to the first ECB publication day (1999-01-04) and then treats it as covered', async () => {
+    const fx = new SpyFx(rates);
+    const svc = makeService(provider, clock, fx);
+    await svc.refreshFx({ needFrom: '1990-01-01' });
+    expect(fx.calls[0]?.from).toBe('1999-01-04');
+    expect((await fxState())?.historyCompleteFrom).toBe('1999-01-04');
+
+    clock.advance(13 * HOUR);
+    await svc.refreshFx({ needFrom: '1970-01-01' });
+    expect(fx.calls[1]?.from).toBe('2026-09-24'); // covered by the clamp: incremental, no re-backfill
   });
 });
 

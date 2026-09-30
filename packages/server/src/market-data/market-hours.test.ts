@@ -51,6 +51,53 @@ describe('isRefreshWindow, winter weekday (offsets shift with DST)', () => {
   });
 });
 
+// US and EU switch DST on different dates: 2026-03-08 (US) vs 2026-03-29 (EU), and 2026-10-25 (EU)
+// vs 2026-11-01 (US). In those weeks New York is 5 h behind Paris instead of 6 h.
+const XNYS = { mic: 'XNYS', timezone: 'America/New_York' };
+describe('isRefreshWindow, US/EU DST mismatch weeks', () => {
+  it.each([
+    // Spring mismatch, Monday 2026-03-16: Paris CET (UTC+1), London GMT (UTC+0), New York EDT (UTC-4).
+    ['XPAR', PAR, '2026-03-16T07:59:00Z', false],
+    ['XPAR', PAR, '2026-03-16T08:00:00Z', true], // 09:00 CET
+    ['XLON', LON, '2026-03-16T07:59:00Z', false],
+    ['XLON', LON, '2026-03-16T08:00:00Z', true], // 08:00 GMT
+    ['XNYS', XNYS, '2026-03-16T13:29:00Z', false], // 09:29 EDT (would be open at 14:30Z in winter)
+    ['XNYS', XNYS, '2026-03-16T13:30:00Z', true],
+    ['XNYS', XNYS, '2026-03-16T20:30:00Z', true], // 16:30 EDT = close + grace
+    ['XNYS', XNYS, '2026-03-16T20:31:00Z', false],
+    // Autumn mismatch, Monday 2026-10-26: Paris already CET, New York still EDT.
+    ['XPAR', PAR, '2026-10-26T07:59:00Z', false],
+    ['XPAR', PAR, '2026-10-26T08:00:00Z', true],
+    ['XPAR', PAR, '2026-10-26T17:00:00Z', true], // 18:00 CET = close + grace
+    ['XPAR', PAR, '2026-10-26T17:01:00Z', false],
+    ['XNYS', XNYS, '2026-10-26T13:29:00Z', false],
+    ['XNYS', XNYS, '2026-10-26T13:30:00Z', true],
+    // The week after, both are on winter time: New York opens at 14:30Z.
+    ['XNYS', XNYS, '2026-11-02T13:30:00Z', false],
+    ['XNYS', XNYS, '2026-11-02T14:30:00Z', true],
+  ])('%s at %s -> %s', (_mic, exchange, iso, expected) => {
+    expect(isRefreshWindow(at(iso), exchange)).toBe(expected);
+  });
+
+  it('the Paris-New York overlap is 5 h wide in the mismatch weeks, not 6 h', () => {
+    const both = (iso: string) => isRefreshWindow(at(iso), PAR) && isRefreshWindow(at(iso), XNYS);
+    // 2026-03-16: Paris open until 16:30Z + 30 min grace, New York from 13:30Z.
+    expect(both('2026-03-16T13:30:00Z')).toBe(true);
+    // 2026-03-02 (both winter): New York opens 14:30Z, so 13:30Z is NOT an overlap.
+    expect(both('2026-03-02T13:30:00Z')).toBe(false);
+  });
+});
+
+describe('XFRA session', () => {
+  it('runs 08:00-22:00 local (+30 min grace)', () => {
+    const FRA = { mic: 'XFRA', timezone: 'Europe/Berlin' };
+    expect(isRefreshWindow(at('2026-09-30T05:59:00Z'), FRA)).toBe(false); // 07:59 CEST
+    expect(isRefreshWindow(at('2026-09-30T06:00:00Z'), FRA)).toBe(true);
+    expect(isRefreshWindow(at('2026-09-30T20:30:00Z'), FRA)).toBe(true); // 22:30 CEST
+    expect(isRefreshWindow(at('2026-09-30T20:31:00Z'), FRA)).toBe(false);
+  });
+});
+
 describe('isRefreshWindow, weekends and fallbacks', () => {
   it('is closed all Saturday and Sunday (local date decides, not UTC)', () => {
     expect(isRefreshWindow(at('2026-10-03T10:00:00Z'), PAR)).toBe(false); // Saturday

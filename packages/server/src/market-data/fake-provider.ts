@@ -246,6 +246,7 @@ export class FakeMarketDataProvider implements MarketDataProvider {
       this.name,
       {
         ...normalized,
+        currency: listing.currency,
         // Truncated by the request only when `from` is after the inception.
         reachedStart: compareDates(from, fakeInceptionDate(listing.id)) <= 0,
       },

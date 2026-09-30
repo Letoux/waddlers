@@ -1,5 +1,6 @@
 import { addDays } from '@waddlers/domain';
 import { purgeAllExpiredSessions } from '../auth/sessions';
+import { describeError } from '../errors';
 import type { Database } from '../db/create';
 import { isRefreshWindow } from './market-hours';
 import { earliestBarDate, findListingRef, heldListingIds, loadListingRefs } from './repository';
@@ -9,6 +10,12 @@ import type { RefreshOutcome } from './service';
 
 /** Refresh quotes only when the stored one is older than this share of the TTL (tick jitter). */
 const QUOTE_TICK_MAX_AGE_SHARE = 0.9;
+/**
+ * The nightly job must really pull: with the 12 h data TTL a refresh made shortly before (an
+ * operator command, the catch-up at start) would make the 03:30 run skip everything. Only a
+ * refresh in the last hour (restart loops) still counts as fresh. Backoff and quota still apply.
+ */
+export const NIGHTLY_MAX_AGE_MS = 60 * 60_000;
 
 export interface JobContext {
   db: Database;
@@ -54,6 +61,8 @@ export interface NightlyResult {
   history: OutcomeCounts;
   fx: RefreshOutcome;
   metrics: number;
+  /** Listings whose metrics could not be computed (logged, never fatal). */
+  metricsFailed: number;
   purgedSessions: number;
 }
 
@@ -65,16 +74,32 @@ export async function runNightly(
   ctx: JobContext,
   options: { maxAgeMs?: number } = {},
 ): Promise<NightlyResult> {
+  const opts = { maxAgeMs: options.maxAgeMs ?? NIGHTLY_MAX_AGE_MS };
   const refs = await heldRefs(ctx);
-  const history = await refreshHistoryFor(ctx, refs, options);
+  const history = await refreshHistoryFor(ctx, refs, opts);
   const fx = await refreshFxFor(
     ctx,
     refs.map((r) => r.id),
-    options,
+    opts,
   );
-  const { computed } = await ctx.runtime.recomputeMetrics(refs.map((r) => r.id));
-  const purgedSessions = await purgeAllExpiredSessions(ctx.db, ctx.runtime.clock());
-  return { history, fx, metrics: computed, purgedSessions };
+  // The purge is independent of the metrics step: one failing must not skip the other.
+  let metrics = 0;
+  let metricsFailed: number;
+  try {
+    const result = await ctx.runtime.recomputeMetrics(refs.map((r) => r.id));
+    metrics = result.computed;
+    metricsFailed = result.failed;
+  } catch (error) {
+    metricsFailed = refs.length;
+    ctx.runtime.logger.error('nightly metrics step failed', { error: describeError(error) });
+  }
+  let purgedSessions = 0;
+  try {
+    purgedSessions = await purgeAllExpiredSessions(ctx.db);
+  } catch (error) {
+    ctx.runtime.logger.error('nightly session purge failed', { error: describeError(error) });
+  }
+  return { history, fx, metrics, metricsFailed, purgedSessions };
 }
 
 export async function refreshHistoryFor(

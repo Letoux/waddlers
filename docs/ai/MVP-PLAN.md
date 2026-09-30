@@ -148,6 +148,7 @@ Decided by the user on 2026-09-29:
 | D10 | Shared spaces | M:N membership with roles (default); table config per user+space |
 | D11 | Adding instruments | Server-side provider-backed search (rate-limited) + add form; admin CLI fallback. S3 fills positions via dev seed/admin CLI; the add form ships right after S4 (needs the search endpoint), on the fake provider until the EODHD adapter lands. |
 | D20 | Missing history for recent listings | Decided 2026-09-29: "on ne ment pas sur la donnée". A history day where any counted position lacks a close or FX has no value (never a partial sum); leading/trailing empty days are trimmed so the chart starts at the first complete day, whose actual close date is shown ("depuis le …"); mid-series gaps stay visible. Details: `docs/ai/DOMAIN.md`. |
+| D21 | End price | Official close for a date wins over a same-day quote; the quote is used only until that close exists (2026-09-30) |
 
 Non-blocking (can default and revisit):
 

@@ -131,10 +131,13 @@ export async function upsertQuotes(
       .onConflictDoUpdate({
         target: quoteLatest.listingId,
         set: {
-          price: sql`excluded.price`,
-          currency: sql`excluded.currency`,
-          asOf: sql`excluded.as_of`,
-          source: sql`excluded.source`,
+          // Price, currency, provider timestamp and source only ever move FORWARD in provider time:
+          // a late or out-of-order response (older `as_of`) must not regress the stored quote.
+          // `fetched_at` still records that a fetch happened, so freshness stays honest.
+          price: sql`case when excluded.as_of >= ${quoteLatest.asOf} then excluded.price else ${quoteLatest.price} end`,
+          currency: sql`case when excluded.as_of >= ${quoteLatest.asOf} then excluded.currency else ${quoteLatest.currency} end`,
+          source: sql`case when excluded.as_of >= ${quoteLatest.asOf} then excluded.source else ${quoteLatest.source} end`,
+          asOf: sql`greatest(excluded.as_of, ${quoteLatest.asOf})`,
           fetchedAt: sql`excluded.fetched_at`,
         },
       });
@@ -373,11 +376,45 @@ export async function recordSuccess(
 }
 
 /**
- * Counts the failure and schedules the next retry: now + min(cap, base * 2^(previous failures)).
+ * Counts failures and schedules the next retry: now + min(cap, base * 2^(previous failures)).
  * Never touches `last_success_at` nor any data table (a failure must not bump `fetched_at`).
- * Atomic in SQL so the count cannot be lost.
+ * Atomic in SQL so the count cannot be lost; one statement for the whole batch.
  */
-export async function recordFailure(
+export async function recordFailures(
+  db: Db,
+  kind: FetchKind,
+  now: Date,
+  entries: readonly { listingId: string | null; errorCode: string }[],
+  config: Pick<MarketDataConfig, 'backoffBaseMs' | 'backoffMaxMs'>,
+): Promise<void> {
+  // One row per key: a statement cannot update the same row twice (last code wins).
+  const byKey = new Map(entries.map((e) => [e.listingId, e.errorCode]));
+  for (const part of chunks([...byKey])) {
+    await db
+      .insert(marketDataFetchState)
+      .values(
+        part.map(([listingId, errorCode]) => ({
+          listingId,
+          kind,
+          lastAttemptAt: now,
+          failureCount: 1,
+          nextRetryAt: new Date(now.getTime() + config.backoffBaseMs),
+          lastErrorCode: errorCode,
+        })),
+      )
+      .onConflictDoUpdate({
+        target: [marketDataFetchState.listingId, marketDataFetchState.kind],
+        set: {
+          lastAttemptAt: now,
+          failureCount: sql`${marketDataFetchState.failureCount} + 1`,
+          lastErrorCode: sql`excluded.last_error_code`,
+          nextRetryAt: sql`${now.toISOString()}::timestamptz + (least(${config.backoffMaxMs}::float8, ${config.backoffBaseMs}::float8 * power(2, least(${marketDataFetchState.failureCount}, 30))) * interval '1 millisecond')`,
+        },
+      });
+  }
+}
+
+export function recordFailure(
   db: Db,
   listingId: string | null,
   kind: FetchKind,
@@ -385,25 +422,41 @@ export async function recordFailure(
   errorCode: string,
   config: Pick<MarketDataConfig, 'backoffBaseMs' | 'backoffMaxMs'>,
 ): Promise<void> {
-  await db
-    .insert(marketDataFetchState)
-    .values({
-      listingId,
-      kind,
-      lastAttemptAt: now,
-      failureCount: 1,
-      nextRetryAt: new Date(now.getTime() + config.backoffBaseMs),
-      lastErrorCode: errorCode,
-    })
-    .onConflictDoUpdate({
-      target: [marketDataFetchState.listingId, marketDataFetchState.kind],
-      set: {
-        lastAttemptAt: now,
-        failureCount: sql`${marketDataFetchState.failureCount} + 1`,
-        lastErrorCode: errorCode,
-        nextRetryAt: sql`${now.toISOString()}::timestamptz + (least(${config.backoffMaxMs}::float8, ${config.backoffBaseMs}::float8 * power(2, least(${marketDataFetchState.failureCount}, 30))) * interval '1 millisecond')`,
-      },
-    });
+  return recordFailures(db, kind, now, [{ listingId, errorCode }], config);
+}
+
+/** Resets the failure streak of several listings in one statement (quotes: no completeness). */
+export async function recordSuccesses(
+  db: Db,
+  listingIds: readonly string[],
+  kind: FetchKind,
+  now: Date,
+): Promise<void> {
+  for (const part of chunks([...new Set(listingIds)])) {
+    await db
+      .insert(marketDataFetchState)
+      .values(
+        part.map((listingId) => ({
+          listingId,
+          kind,
+          lastSuccessAt: now,
+          lastAttemptAt: now,
+          failureCount: 0,
+          nextRetryAt: null,
+          lastErrorCode: null,
+        })),
+      )
+      .onConflictDoUpdate({
+        target: [marketDataFetchState.listingId, marketDataFetchState.kind],
+        set: {
+          lastSuccessAt: now,
+          lastAttemptAt: now,
+          failureCount: 0,
+          nextRetryAt: null,
+          lastErrorCode: null,
+        },
+      });
+  }
 }
 
 // ---- provider usage -------------------------------------------------------------------

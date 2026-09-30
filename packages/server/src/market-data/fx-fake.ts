@@ -1,7 +1,7 @@
 import { addDays, compareDates, diffDays, type PlainDate } from '@waddlers/domain';
 import { isWeekday } from './dates';
 import { unit, type FakeFailure } from './fake-provider';
-import { toPositiveDecimalString } from './normalize';
+import { FX_LIMIT, toPositiveDecimalString } from './normalize';
 import {
   fail,
   ok,
@@ -80,7 +80,7 @@ export class FakeFxProvider implements FxProvider {
         if (this.failure.mode === 'malformed' && n % 7 === 0)
           raw = [0, -1, Number.NaN, ''][((n / 7) % 4) | 0];
         n += 1;
-        const ratePerEur = toPositiveDecimalString(raw);
+        const ratePerEur = toPositiveDecimalString(raw, FX_LIMIT);
         if (ratePerEur === null) rejectedRows += 1;
         else rates.push({ date, currency, ratePerEur });
       }

@@ -1,8 +1,10 @@
 import { addDays, compareDates, type PlainDate } from '@waddlers/domain';
 import type { Database } from '../db/create';
 import { describeError } from '../errors';
+import { normalizeCurrency } from '@waddlers/domain';
 import { backoffMs, type MarketDataConfig } from './config';
 import { localDate, utcDate } from './dates';
+import { FX_LIMIT, toPositiveDecimalString } from './normalize';
 import {
   barDateBounds,
   loadListingRefs,
@@ -10,8 +12,9 @@ import {
   readFetchState,
   readFetchStates,
   readQuotes,
-  recordFailure,
+  recordFailures,
   recordSuccess,
+  recordSuccesses,
   upsertBars,
   upsertFxRates,
   upsertQuotes,
@@ -46,7 +49,13 @@ export type Freshness = 'fresh' | 'stale' | 'unavailable';
 export interface Served<T> {
   data: T | null;
   freshness: Freshness;
+  /**
+   * Provider validity instant. For date-precision data (history, FX) it is UTC midnight of
+   * `asOfDate`: format `asOfDate` (a plain calendar date), never this instant in a local timezone.
+   */
   asOf: Date | null;
+  /** Calendar date of the data for history/FX (no timezone shift possible); null for quotes. */
+  asOfDate: PlainDate | null;
   source: string | null;
   fetchedAt: Date | null;
 }
@@ -210,6 +219,7 @@ export class MarketDataService {
       data: { price: q.price, currency: q.currency },
       freshness,
       asOf: q.asOf,
+      asOfDate: null,
       source: q.source,
       fetchedAt: q.fetchedAt,
     };
@@ -227,6 +237,7 @@ export class MarketDataService {
       freshness: fresh ? 'fresh' : 'stale',
       // Validity of the series = its last trading day (date precision).
       asOf: new Date(`${last.date}T00:00:00Z`),
+      asOfDate: last.date,
       source: last.source,
       fetchedAt,
     };
@@ -295,6 +306,7 @@ export class MarketDataService {
     options: RefreshOptions,
   ): Promise<Map<string, RefreshOutcome>> {
     const outcomes = new Map<string, RefreshOutcome>();
+    let providerOk = false;
     try {
       const now = this.clock();
       const ids = refs.map((r) => r.id);
@@ -318,37 +330,52 @@ export class MarketDataService {
       const result = await this.provider.getQuotes(todo);
       const at = this.clock();
       if (!result.ok) {
-        for (const ref of todo) {
-          await this.fail(ref.id, 'quote', at, result.code);
-          outcomes.set(ref.id, 'failed');
-        }
+        await this.failMany(
+          'quote',
+          at,
+          todo.map((r) => ({ listingId: r.id, code: result.code })),
+        );
+        for (const ref of todo) outcomes.set(ref.id, 'failed');
         return outcomes;
       }
+      providerOk = true;
       const byId = new Map(todo.map((r) => [r.id, r]));
-      const valid = result.data.quotes.filter((q) => {
+      const valid = result.data.quotes.flatMap((q) => {
         const ref = byId.get(q.listingId);
-        return (
-          ref !== undefined &&
-          q.currency === ref.currency && // never store a quote in another currency
+        // Defence in depth (adapters already normalize): never store a quote in another
+        // currency, from the future, or with a price that would round/overflow the column.
+        const price = toPositiveDecimalString(q.price);
+        return ref !== undefined &&
+          price !== null &&
+          q.currency === ref.currency &&
           q.asOf.getTime() <= at.getTime() + MAX_FUTURE_SKEW_MS
-        );
+          ? [{ ...q, price }]
+          : [];
       });
       await upsertQuotes(this.db, valid, { source: result.source, fetchedAt: at });
-      const good = new Set<string>();
-      for (const q of valid) {
-        await recordSuccess(this.db, q.listingId, 'quote', at);
-        good.add(q.listingId);
-        outcomes.set(q.listingId, 'refreshed');
-      }
+      const good = new Set(valid.map((q) => q.listingId));
+      await recordSuccesses(this.db, [...good], 'quote', at);
+      for (const id of good) outcomes.set(id, 'refreshed');
       const rejected = new Map(result.data.rejected.map((r) => [r.listingId, r.code]));
-      for (const ref of todo) {
-        if (good.has(ref.id)) continue;
-        await this.fail(ref.id, 'quote', at, rejected.get(ref.id) ?? 'not_found');
-        outcomes.set(ref.id, 'failed');
-      }
+      const bad = todo.filter((ref) => !good.has(ref.id));
+      await this.failMany(
+        'quote',
+        at,
+        bad.map((ref) => ({ listingId: ref.id, code: rejected.get(ref.id) ?? 'not_found' })),
+      );
+      for (const ref of bad) outcomes.set(ref.id, 'failed');
       await this.notify([...good]);
     } catch (error) {
       this.logFailure('market-data quote refresh failed', error);
+      // After a successful provider call a persist error is deterministic for this payload:
+      // back off instead of re-fetching (and re-paying for) it on every tick.
+      if (providerOk)
+        await this.failManyBestEffort(
+          'quote',
+          refs
+            .filter((r) => !outcomes.has(r.id))
+            .map((r) => ({ listingId: r.id, code: 'bad_payload' })),
+        );
       for (const ref of refs) if (!outcomes.has(ref.id)) outcomes.set(ref.id, 'failed');
     }
     return outcomes;
@@ -374,6 +401,7 @@ export class MarketDataService {
   }
 
   private async runHistory(ref: ListingRef, options: RefreshOptions): Promise<RefreshOutcome> {
+    let providerOk = false;
     try {
       const now = this.clock();
       const state = await readFetchState(this.db, ref.id, 'history');
@@ -395,8 +423,19 @@ export class MarketDataService {
         await this.fail(ref.id, 'history', at, result.code);
         return 'failed';
       }
-      // Defence in depth: adapters already range-check, the service never stores a future day.
-      const bars = result.data.bars.filter((b) => compareDates(b.date, to) <= 0);
+      providerOk = true;
+      // Same rule as the quote path: never store bars quoted in another currency than the listing.
+      if (!sameQuotedCurrency(result.data.currency, ref.currency)) {
+        await this.fail(ref.id, 'history', at, 'bad_payload');
+        return 'failed';
+      }
+      // Defence in depth: adapters already normalize. Row-level drop, never a whole-batch failure:
+      // no future day, and no close/adj_close that would round or overflow the column.
+      const bars = result.data.bars.flatMap((b) => {
+        const close = toPositiveDecimalString(b.close);
+        if (close === null || compareDates(b.date, to) > 0) return [];
+        return [{ ...b, close, adjClose: toPositiveDecimalString(b.adjClose) }];
+      });
       if (full && bars.length === 0) {
         await this.fail(ref.id, 'history', at, 'not_found');
         return 'failed';
@@ -413,6 +452,8 @@ export class MarketDataService {
       return 'refreshed';
     } catch (error) {
       this.logFailure('market-data history refresh failed', error);
+      if (providerOk)
+        await this.failManyBestEffort('history', [{ listingId: ref.id, code: 'bad_payload' }]);
       return 'failed';
     }
   }
@@ -426,6 +467,7 @@ export class MarketDataService {
   }
 
   private async runFx(options: RefreshOptions & { needFrom?: PlainDate }): Promise<RefreshOutcome> {
+    let providerOk = false;
     try {
       const now = this.clock();
       const today = utcDate(now);
@@ -459,12 +501,18 @@ export class MarketDataService {
         await this.fail(null, 'fx', at, result.code);
         return 'failed';
       }
-      if (result.data.rates.length === 0) {
+      providerOk = true;
+      // Row-level defence in depth: a rate that would round/overflow numeric(20,10) is dropped.
+      const rates = result.data.rates.flatMap((r) => {
+        const ratePerEur = toPositiveDecimalString(r.ratePerEur, FX_LIMIT);
+        return ratePerEur === null ? [] : [{ ...r, ratePerEur }];
+      });
+      if (rates.length === 0) {
         await this.fail(null, 'fx', at, 'not_found');
         return 'failed';
       }
       await this.db.transaction(async (tx) => {
-        await upsertFxRates(tx, result.data.rates, { source: result.source, fetchedAt: at });
+        await upsertFxRates(tx, rates, { source: result.source, fetchedAt: at });
         // A backfill (from == needFrom) proves coverage from there on.
         await recordSuccess(tx, null, 'fx', at, {
           historyCompleteFrom: from === needFrom ? needFrom : null,
@@ -473,6 +521,8 @@ export class MarketDataService {
       return 'refreshed';
     } catch (error) {
       this.logFailure('market-data FX refresh failed', error);
+      if (providerOk)
+        await this.failManyBestEffort('fx', [{ listingId: null, code: 'bad_payload' }]);
       return 'failed';
     }
   }
@@ -487,19 +537,50 @@ export class MarketDataService {
     return p;
   }
 
-  /**
-   * Records a failed attempt (negative cache + exponential backoff). A quota refusal is not the
-   * listing's fault: nothing is recorded, the next call simply asks the quota again.
-   */
-  private async fail(
+  /** Records one failed attempt (negative cache + exponential backoff). */
+  private fail(
     listingId: string | null,
     kind: 'quote' | 'history' | 'fx',
     at: Date,
     code: ProviderErrorCode,
   ): Promise<void> {
-    if (code === 'quota_exceeded') return;
-    await recordFailure(this.db, listingId, kind, at, code, this.config);
-    this.log.warn('market-data refresh failed', { kind, code, listingId });
+    return this.failMany(kind, at, [{ listingId, code }]);
+  }
+
+  /**
+   * Records failed attempts in one statement. Only the LOCAL quota refusal (`local_quota`, raised
+   * by our call guard before any request) is not the listing's fault: nothing is recorded and
+   * the next call simply asks the quota again. An UPSTREAM `quota_exceeded` (the provider itself
+   * refused after a real request) does back off like any other failure.
+   */
+  private async failMany(
+    kind: 'quote' | 'history' | 'fx',
+    at: Date,
+    entries: readonly { listingId: string | null; code: ProviderErrorCode }[],
+  ): Promise<void> {
+    const recorded = entries.filter((e) => e.code !== 'local_quota');
+    if (recorded.length === 0) return;
+    await recordFailures(
+      this.db,
+      kind,
+      at,
+      recorded.map((e) => ({ listingId: e.listingId, errorCode: e.code })),
+      this.config,
+    );
+    for (const e of recorded)
+      this.log.warn('market-data refresh failed', { kind, code: e.code, listingId: e.listingId });
+  }
+
+  /** Backoff after a persist error; never throws (the database may be the very problem). */
+  private async failManyBestEffort(
+    kind: 'quote' | 'history' | 'fx',
+    entries: readonly { listingId: string | null; code: ProviderErrorCode }[],
+  ): Promise<void> {
+    try {
+      await this.failMany(kind, this.clock(), entries);
+    } catch (error) {
+      this.logFailure('market-data could not record the failure', error);
+    }
   }
 
   private async notify(ids: string[]): Promise<void> {
@@ -517,8 +598,26 @@ export class MarketDataService {
   }
 }
 
+/**
+ * Bars quoted in the listing's currency (or the same minor/major unit spelling: GBX vs GBp).
+ * GBP vs GBX differ by a factor 100 and are NOT compatible.
+ */
+export function sameQuotedCurrency(a: string, b: string): boolean {
+  if (a === b) return true;
+  const x = normalizeCurrency(a);
+  const y = normalizeCurrency(b);
+  return x !== null && y !== null && x.currency === y.currency && x.isMinorUnit === y.isMinorUnit;
+}
+
 function unavailable<T>(): Served<T> {
-  return { data: null, freshness: 'unavailable', asOf: null, source: null, fetchedAt: null };
+  return {
+    data: null,
+    freshness: 'unavailable',
+    asOf: null,
+    asOfDate: null,
+    source: null,
+    fetchedAt: null,
+  };
 }
 
 function servedFx(
@@ -536,6 +635,7 @@ function servedFx(
     },
     freshness,
     asOf: new Date(`${latest}T00:00:00Z`),
+    asOfDate: latest,
     source: rates[0]!.source,
     fetchedAt,
   };

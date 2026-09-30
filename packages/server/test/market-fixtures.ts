@@ -58,11 +58,19 @@ export interface SpyOptions {
   price?: string;
   delayMs?: number;
   /** When set, every call fails with this code. */
-  failWith?: 'network' | 'upstream_error' | 'unauthorized';
+  failWith?: 'network' | 'upstream_error' | 'unauthorized' | 'quota_exceeded' | 'local_quota';
+  /** `source` reported by successful results (default `fake`); an invalid one breaks persistence on purpose. */
+  source?: string;
   clock: () => Date;
   /** Bars returned by getDailyHistory: `[date, close]`. */
   bars?: [string, string][];
   reachedStart?: boolean;
+  /** Provider timestamp of every quote (default: the clock). */
+  quoteAsOf?: Date;
+  /** Currency stated on the history batch (default: the listing's). */
+  historyCurrency?: string;
+  /** Raw price strings per listing id for quotes (overrides `price`). */
+  prices?: Record<string, string>;
 }
 
 /** Spy provider: records calls and answers deterministically (never a real network call). */
@@ -80,13 +88,13 @@ export class SpyProvider implements MarketDataProvider {
     this.quoteCalls.push(listings.map((l) => l.id));
     await this.pause();
     if (this.options.failWith) return fail('fake', this.options.failWith, 'spy failure');
-    const asOf = this.options.clock();
+    const asOf = this.options.quoteAsOf ?? this.options.clock();
     return ok(
-      'fake',
+      this.options.source ?? 'fake',
       {
         quotes: listings.map((l) => ({
           listingId: l.id,
-          price: this.options.price ?? '100.5',
+          price: this.options.prices?.[l.id] ?? this.options.price ?? '100.5',
           currency: l.currency,
           asOf,
         })),
@@ -108,8 +116,13 @@ export class SpyProvider implements MarketDataProvider {
       .filter(([d]) => d >= from && d <= to)
       .map(([date, close]) => ({ date, close, adjClose: null }));
     return ok(
-      'fake',
-      { bars, rejectedRows: 0, reachedStart: this.options.reachedStart ?? true },
+      this.options.source ?? 'fake',
+      {
+        bars,
+        rejectedRows: 0,
+        reachedStart: this.options.reachedStart ?? true,
+        currency: this.options.historyCurrency ?? listing.currency,
+      },
       this.options.clock(),
     );
   }

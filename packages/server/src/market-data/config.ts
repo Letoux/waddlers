@@ -12,7 +12,13 @@ export interface MarketDataConfig {
   backoffMaxMs: number;
   /** Incremental history re-pulls this many trailing days (late corrections). */
   incrementalOverlapDays: number;
-  /** FX rate older than this (vs the price date) is treated as missing, never carried forward silently. */
+  /**
+   * FX rate older than this (vs the price date) is treated as missing, never carried forward
+   * silently. 7 days, deliberately tighter than the 10-day close tolerance of the domain: ECB
+   * publishes on every TARGET working day, so the longest legitimate gap is about 4 days (Good
+   * Friday to Easter Monday, plus the weekends around it). A week leaves room for one missed
+   * publication; a base CLOSE may sit further back because exchange holidays differ by market.
+   */
   fxToleranceDays: number;
   dailyQuota: number;
   concurrency: number;

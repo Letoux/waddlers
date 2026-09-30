@@ -130,7 +130,7 @@ export class CallGuard {
     const { provider, secrets } = this.options;
     const day = this.clock().toISOString().slice(0, 10);
     if (!(await this.reserveQuota(day))) {
-      return fail(provider, 'quota_exceeded', 'daily provider quota exhausted');
+      return fail(provider, 'local_quota', 'daily provider quota exhausted');
     }
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;

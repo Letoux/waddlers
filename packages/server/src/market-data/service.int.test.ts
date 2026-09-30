@@ -1,7 +1,8 @@
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { getDb } from '../db/client';
-import { marketDataFetchState, quoteLatest } from '../db/schema';
+import { marketDataFetchState, providerUsage, quoteLatest } from '../db/schema';
+import { DbUsageStore } from './repository';
 import { ensureReferenceData } from '../../test/space-fixtures';
 import { releaseTestEnv, useTestEnv } from '../../test/auth-harness';
 import {
@@ -10,6 +11,7 @@ import {
   SpyProvider,
   TestClock,
   makeService,
+  refFor,
   resetMarketTables,
 } from '../../test/market-fixtures';
 
@@ -91,6 +93,7 @@ describe('getQuote: stale-while-revalidate', () => {
       data: null,
       freshness: 'unavailable',
       asOf: null,
+      asOfDate: null,
       source: null,
       fetchedAt: null,
     });
@@ -194,5 +197,107 @@ describe('failures', () => {
     );
     expect((await svc.refreshQuotesById([listingId])).get(listingId)).toBe('failed');
     expect(await stored()).toBeUndefined();
+  });
+});
+
+describe('upsertQuotes never regresses (review P2-1)', () => {
+  it('an older provider timestamp keeps price and as_of but records that a fetch happened', async () => {
+    const svc = makeService(provider, clock);
+    provider.options.price = '100';
+    await svc.refreshQuotesById([listingId]);
+    const first = await stored();
+    expect(first?.asOf).toEqual(new Date(T0));
+
+    clock.advance(20 * MIN);
+    provider.options.price = '90';
+    provider.options.quoteAsOf = new Date(new Date(T0).getTime() - HOUR);
+    expect((await svc.refreshQuotesById([listingId])).get(listingId)).toBe('refreshed');
+    const after = await stored();
+    expect(after).toMatchObject({ price: '100.00000000', currency: 'EUR' });
+    expect(after?.asOf).toEqual(new Date(T0));
+    expect(after?.fetchedAt).toEqual(clock.now()); // freshness reflects the fetch, not the data time
+
+    // A newer timestamp still moves forward.
+    provider.options.price = '120';
+    provider.options.quoteAsOf = new Date(clock.now().getTime());
+    clock.advance(20 * MIN);
+    await svc.refreshQuotesById([listingId]);
+    expect(await stored()).toMatchObject({ price: '120.00000000' });
+  });
+});
+
+describe('failure classification after a good provider call (audit P2-1, review P3-7)', () => {
+  it('a deterministic persist error on quotes backs off with bad_payload', async () => {
+    provider.options.source = 'BAD SOURCE!'; // violates quote_latest_source_format
+    const svc = makeService(provider, clock);
+    expect((await svc.refreshQuotesById([listingId])).get(listingId)).toBe('failed');
+    const [state] = await getDb().select().from(marketDataFetchState);
+    expect(state).toMatchObject({ failureCount: 1, lastErrorCode: 'bad_payload' });
+    expect((await svc.refreshQuotesById([listingId])).get(listingId)).toBe('skipped_backoff');
+    expect(provider.quoteCalls).toHaveLength(1);
+  });
+
+  it('a quote whose price would round at numeric(24,8) is dropped: failed, nothing stored', async () => {
+    provider.options.price = '1e-9';
+    expect((await makeService(provider, clock).refreshQuotesById([listingId])).get(listingId)).toBe(
+      'failed',
+    );
+    expect(await stored()).toBeUndefined();
+  });
+
+  it('an UPSTREAM quota_exceeded backs off; the LOCAL quota refusal does not', async () => {
+    const svc = makeService(provider, clock);
+    provider.options.failWith = 'quota_exceeded';
+    await svc.refreshQuotesById([listingId]);
+    const [upstream] = await getDb().select().from(marketDataFetchState);
+    expect(upstream).toMatchObject({ failureCount: 1, lastErrorCode: 'quota_exceeded' });
+
+    await getDb().delete(marketDataFetchState);
+    provider.options.failWith = 'local_quota';
+    await svc.refreshQuotesById([listingId]);
+    expect(await getDb().select().from(marketDataFetchState)).toHaveLength(0);
+  });
+});
+
+describe('DbUsageStore.reserve under concurrency', () => {
+  it('10 parallel reservations against a budget of 3 succeed exactly 3 times', async () => {
+    const store = new DbUsageStore(getDb());
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => store.reserve('fake', '2026-09-30', 3)),
+    );
+    expect(results.filter(Boolean)).toHaveLength(3);
+    const [usage] = await getDb().select().from(providerUsage);
+    expect(usage).toMatchObject({ provider: 'fake', day: '2026-09-30', calls: 3 });
+  });
+
+  it('a zero budget refuses everything and counts nothing', async () => {
+    const store = new DbUsageStore(getDb());
+    expect(await store.reserve('fake', '2026-09-30', 0)).toBe(false);
+    expect(await getDb().select().from(providerUsage)).toHaveLength(0);
+  });
+});
+
+describe('partially overlapping in-flight quote batches', () => {
+  it('the second caller joins the shared listing and fetches only its own new one', async () => {
+    const ids = await ensureReferenceData();
+    const [a, b, c] = [ids.ai.listingId, ids.shel.listingId, ids.cw8.listingId];
+    provider.options.delayMs = 60;
+    const svc = makeService(provider, clock);
+    const refs = await Promise.all([a, b, c].map((id) => refFor(id)));
+    const first = svc.refreshQuotes([refs[0]!, refs[1]!]);
+    // Registration is synchronous: the second call sees A and B in flight.
+    const second = svc.refreshQuotes([refs[1]!, refs[2]!]);
+    const [o1, o2] = await Promise.all([first, second]);
+    // Two provider calls (their order depends on DB read timing): {A, B} and only {C}.
+    const calls = provider.quoteCalls
+      .map((ids) => [...ids].sort())
+      .sort((x, y) => y.length - x.length);
+    expect(calls).toEqual([[a, b].sort(), [c]]);
+    expect([...o1.values()]).toEqual(['refreshed', 'refreshed']);
+    expect(o2.get(b)).toBe('refreshed'); // joined, not fetched twice
+    expect(o2.get(c)).toBe('refreshed');
+    expect((await getDb().select().from(quoteLatest)).map((q) => q.listingId).sort()).toEqual(
+      [a, b, c].sort(),
+    );
   });
 });

@@ -19,7 +19,7 @@ export const MARKET_HOURS: Readonly<Record<string, TradingHours>> = {
   XMIL: { open: '09:00', close: '17:30' },
   XMAD: { open: '09:00', close: '17:30' },
   XETR: { open: '09:00', close: '17:30' },
-  XFRA: { open: '08:00', close: '20:00' },
+  XFRA: { open: '08:00', close: '22:00' },
   XSWX: { open: '09:00', close: '17:30' },
   XLON: { open: '08:00', close: '16:30' },
   XSTO: { open: '09:00', close: '17:30' },

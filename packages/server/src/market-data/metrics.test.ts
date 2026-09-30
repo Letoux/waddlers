@@ -19,12 +19,22 @@ describe('selectEndPrice: quote vs close', () => {
     expect(end?.price.toString()).toBe('103');
   });
 
-  it('ties go to the quote (same local date as the last close)', () => {
+  it('D21: the official close for the same date wins over the quote', () => {
     const end = selectEndPrice({
       ...base,
       quote: { price: '102.5', asOf: new Date('2026-09-29T15:00:00Z') },
     });
-    expect(end).toMatchObject({ basis: 'quote', asOfDate: '2026-09-29' });
+    expect(end).toMatchObject({ basis: 'close', asOfDate: '2026-09-29', priceAsOf: null });
+    expect(end?.price.toString()).toBe('102');
+  });
+
+  it('D21: a quote-only day (no close yet for its date) uses the quote', () => {
+    const end = selectEndPrice({
+      ...base,
+      closes: [{ date: '2026-09-29', close: '102' }],
+      quote: { price: '102.5', asOf: new Date('2026-09-30T15:00:00Z') },
+    });
+    expect(end).toMatchObject({ basis: 'quote', asOfDate: '2026-09-30' });
   });
 
   it('uses the last close when the quote is older than it', () => {
@@ -37,7 +47,7 @@ describe('selectEndPrice: quote vs close', () => {
   });
 
   it('decides on the EXCHANGE-local date, not the UTC date', () => {
-    // 2026-09-29T22:30Z is already 2026-09-30 in Paris (quote newer) but 2026-09-29 18:30 in New York (tie).
+    // 2026-09-29T22:30Z is already 2026-09-30 in Paris (quote date 09-30) but 2026-09-29 18:30 in New York.
     const asOf = new Date('2026-09-29T22:30:00Z');
     const withClose = (timezone: string, date: string) =>
       selectEndPrice({
@@ -46,16 +56,20 @@ describe('selectEndPrice: quote vs close', () => {
         closes: [{ date, close: '10' }],
         quote: { price: '11', asOf },
       });
-    expect(withClose('Europe/Paris', '2026-09-30')?.basis).toBe('quote');
-    expect(
+    expect(withClose('Europe/Paris', '2026-09-29')).toMatchObject({
+      basis: 'quote',
+      asOfDate: '2026-09-30',
+    });
+    expect(withClose('Europe/Paris', '2026-09-30')?.basis).toBe('close'); // same local date: close wins
+    const newYork = (closeDate: string) =>
       selectEndPrice({
         currency: 'USD',
         timezone: 'America/New_York',
-        closes: [{ date: '2026-09-29', close: '10' }],
+        closes: [{ date: closeDate, close: '10' }],
         quote: { price: '11', asOf },
-      })?.asOfDate,
-    ).toBe('2026-09-29');
-    expect(withClose('Europe/Paris', '2026-09-30')?.asOfDate).toBe('2026-09-30');
+      });
+    expect(newYork('2026-09-29')).toMatchObject({ basis: 'close', asOfDate: '2026-09-29' });
+    expect(newYork('2026-09-28')).toMatchObject({ basis: 'quote', asOfDate: '2026-09-29' });
   });
 
   it('falls back to whichever exists, and to null with neither', () => {
