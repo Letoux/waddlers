@@ -15,8 +15,10 @@ export type ConversionResult =
   { ok: true; amount: Decimal } | { ok: false; reason: FxUnavailableReason };
 
 /** Units of `currency` per 1 EUR, or null when unknown / non-positive (never 1). */
+const ONE = new Decimal(1);
+
 function perEur(currency: CurrencyCode, rates: FxRates): Decimal | null {
-  if (currency === 'EUR') return new Decimal(1);
+  if (currency === 'EUR') return ONE;
   const rate = rates.get(currency);
   if (rate === undefined || !rate.isFinite() || !rate.gt(0)) return null;
   return asDecimal(rate);
@@ -39,12 +41,16 @@ export function convertAmount(
   const f = normalizeCurrency(from);
   const t = normalizeCurrency(to);
   if (!f || !t) return { ok: false, reason: 'currency_invalid' };
-  const major = asDecimal(amount).div(f.divisor);
-  if (f.currency === t.currency) return { ok: true, amount: major.times(t.divisor) };
+  // Dividing or multiplying by exactly 1 is the identity: skipped because this runs once per
+  // position per day in the history series (65k+ calls for a 50-position, 5-year chart).
+  const major = f.divisor.eq(1) ? asDecimal(amount) : asDecimal(amount).div(f.divisor);
+  const scale = (value: Decimal, by: Decimal) => (by.eq(1) ? value : value.times(by));
+  if (f.currency === t.currency) return { ok: true, amount: scale(major, t.divisor) };
   const rateFrom = perEur(f.currency, rates);
   const rateTo = perEur(t.currency, rates);
   if (rateFrom === null || rateTo === null) return { ok: false, reason: 'rate_missing' };
-  return { ok: true, amount: major.div(rateFrom).times(rateTo).times(t.divisor) };
+  const eur = rateFrom.eq(1) ? major : major.div(rateFrom);
+  return { ok: true, amount: scale(scale(eur, rateTo), t.divisor) };
 }
 
 /** Nullable convenience wrapper: `null` amount or any failure -> `null`. */

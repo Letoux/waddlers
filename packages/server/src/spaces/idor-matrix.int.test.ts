@@ -64,6 +64,12 @@ const PROCEDURES: ProcedureSpec[] = [
     takesPosition: false,
     input: (spaceId) => ({ spaceId }),
   },
+  ...['summary', 'history', 'movers'].map((name): ProcedureSpec => ({
+    path: `dashboard.${name}`,
+    minRole: 'viewer',
+    takesPosition: false,
+    input: (spaceId) => ({ spaceId, period: '1m' }),
+  })),
   {
     path: 'positions.setQuantity',
     minRole: 'editor',
@@ -227,7 +233,14 @@ describe.each(PROCEDURES)('IDOR matrix: $path', (spec) => {
   );
 
   it('authorization wins over input validation (garbage payload)', async () => {
-    const garbage = { spaceId: fx.spaceA, positionId: 'nope', quantity: '1e3', extra: true };
+    // `period` stays valid: the dashboard inputs are only { spaceId, period } and a bad one is a 400.
+    const garbage = {
+      spaceId: fx.spaceA,
+      period: '1m',
+      positionId: 'nope',
+      quantity: '1e3',
+      extra: true,
+    };
     expectOutcome(await call(spec, 'nonMember', fx.spaceA, fx.posA, garbage), 'NOT_FOUND');
     expectOutcome(
       await call(spec, 'viewer', fx.spaceA, fx.posA, garbage),
@@ -288,7 +301,8 @@ describe('the matrix covers the whole contract', () => {
 
 describe('the ok path really did its job (sanity of the matrix)', () => {
   it('owner setQuantity and remove change state, viewer does not', async () => {
-    const [setQ, remove] = [PROCEDURES[3]!, PROCEDURES[4]!];
+    const setQ = PROCEDURES.find((p) => p.path === 'positions.setQuantity')!;
+    const remove = PROCEDURES.find((p) => p.path === 'positions.remove')!;
     expectOutcome(await call(setQ, 'editor', fx.spaceA, fx.posA), 'ok');
     const [row] = await getDb().select().from(spacePositions).where(eq(spacePositions.id, fx.posA));
     expect(Number(row?.quantity)).toBe(99.5);

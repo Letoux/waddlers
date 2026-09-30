@@ -54,9 +54,9 @@ All review P2s and audit findings confirmed fixed or deferred with a reason; no 
 
 | Ref | Sev | Finding | Status |
 | --- | --- | --- | --- |
-| Re-review R1 | P3 | `DISTINCT ON` latest/first-close reads still scan each listing's matching rows in Postgres; `minStart` shared per 500-listing chunk | Open. Use `LEFT JOIN LATERAL … LIMIT 1` on the `(listing_id, trade_date)` PK; confirm with `EXPLAIN (ANALYZE, BUFFERS)` (before S6 scale work). |
+| Re-review R1 | P3 | `DISTINCT ON` latest/first-close reads still scan each listing's matching rows in Postgres; `minStart` shared per 500-listing chunk | **Fixed (S5 prerequisite).** `latestClosePerListing`, `latestCloseBefore` and `firstCloseAfterCompleteFrom` now use `JOIN LATERAL … ORDER BY … LIMIT 1` per listing on the `(listing_id, trade_date)` PK (`metrics-reads.ts`); the bounded-vs-unbounded equivalence test stays green. `minStart` shared per 500-listing chunk is unchanged (it only widens the window read, never narrows it). |
 | Re-review R2 | P3 | D21 relies on adapters not returning the current session's bar before its close | Documented in the EODHD adapter checklist; optional service-side guard later. |
-| Re-review R3 | P3 | Metrics window uses `DEFAULT_TOLERANCE_DAYS` while `computePerformance` uses its default implicitly | Open. Pass the same constant explicitly to `computePerformance`. |
+| Re-review R3 | P3 | Metrics window uses `DEFAULT_TOLERANCE_DAYS` while `computePerformance` uses its default implicitly | **Fixed (S5 prerequisite).** `METRICS_TOLERANCE_DAYS` feeds both `windowStart` and `computePerformance({ toleranceDays })`. |
 | Re-review R4 | P3 | Quote rejected by the service scale check recorded as `not_found`; stored quotes can get `bad_payload` if `recordSuccesses` throws | Open (diagnostics only, no financial effect). |
 | Re-review R5 | P3 | Markdown typo in `MARKET-DATA.md` | **Fixed.** |
 | Re-review P3-3 | P3 | `listing_metrics` has no staleness flag | Open for S6: derive staleness from `as_of_date` / `computed_at`, or add a column. |

@@ -24,6 +24,9 @@ export const CLASSIFICATION: Record<string, Classification> = {
   'positions.list': 'space',
   'positions.setQuantity': 'space',
   'positions.remove': 'space',
+  'dashboard.summary': 'space',
+  'dashboard.history': 'space',
+  'dashboard.movers': 'space',
 };
 
 /**

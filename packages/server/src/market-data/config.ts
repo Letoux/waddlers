@@ -28,6 +28,9 @@ export interface MarketDataConfig {
   retryMaxDelayMs: number;
 }
 
+/** Stored FX older than this vs the price date is treated as missing (see `fxToleranceDays`). */
+export const FX_TOLERANCE_DAYS = 7;
+
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
@@ -40,7 +43,7 @@ export function marketDataConfigFromEnv(env: MarketDataEnv): MarketDataConfig {
     backoffBaseMs: MINUTE,
     backoffMaxMs: 6 * HOUR,
     incrementalOverlapDays: 5,
-    fxToleranceDays: 7,
+    fxToleranceDays: FX_TOLERANCE_DAYS,
     dailyQuota: env.MARKET_DATA_DAILY_QUOTA,
     concurrency: env.MARKET_DATA_CONCURRENCY,
     timeoutMs: env.MARKET_DATA_TIMEOUT_MS,

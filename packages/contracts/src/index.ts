@@ -1,5 +1,14 @@
 import { oc } from '@orpc/contract';
 import { z } from 'zod';
+import {
+  dashboardHistoryInputSchema,
+  dashboardHistoryOutputSchema,
+  dashboardInputSchema,
+  dashboardMoversOutputSchema,
+  dashboardSummaryOutputSchema,
+} from './dashboard';
+
+export * from './dashboard';
 
 /** Browser-safe oRPC contract. Never import server code here. */
 
@@ -240,6 +249,18 @@ export const contract = {
       .output(z.object({ positionId: z.uuid(), quantity: z.string().nullable() })),
     /** owner/editor only. NOT_FOUND when the position is not in that space (also when already removed). */
     remove: oc.input(removePositionInputSchema).output(z.object({ ok: z.literal(true) })),
+  },
+  /**
+   * S5, all viewer-level and space-scoped. They read PostgreSQL only (never a provider); the
+   * worker keeps the data fresh. `period` is one of 1w | 1m | 6m | 1y | 5y | max.
+   */
+  dashboard: {
+    /** Current value (partial total + `missing`, D5), period change, freshness. */
+    summary: oc.input(dashboardInputSchema).output(dashboardSummaryOutputSchema),
+    /** Value series of the CURRENT positions (D6/D20), at most 400 points; `fxMode` (D22) defaults to `historical`. */
+    history: oc.input(dashboardHistoryInputSchema).output(dashboardHistoryOutputSchema),
+    /** Top 5 gainers and losers by period performance (local currency, D4). */
+    movers: oc.input(dashboardInputSchema).output(dashboardMoversOutputSchema),
   },
 };
 

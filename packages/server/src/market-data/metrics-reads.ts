@@ -33,18 +33,30 @@ const sameCurrency = and(
   eq(listings.currency, priceDaily.currency),
 );
 
+/**
+ * Latest / first close per listing use `JOIN LATERAL ... ORDER BY ... LIMIT 1` on the
+ * `(listing_id, trade_date)` primary key: one index probe per listing, independent of how many
+ * rows the listing has (REVIEW-S4 R1; the former `DISTINCT ON` scanned every matching row).
+ */
+
 /** Latest usable close per listing. */
 export async function latestClosePerListing(
   db: Database,
   ids: readonly string[],
 ): Promise<Map<string, CloseRow>> {
   if (ids.length === 0) return new Map();
-  const rows = await db
-    .selectDistinctOn([priceDaily.listingId], columns)
+  const pick = db
+    .select({ date: priceDaily.tradeDate, close: priceDaily.close })
     .from(priceDaily)
-    .innerJoin(listings, sameCurrency)
-    .where(and(inArray(priceDaily.listingId, [...ids]), isNotNull(priceDaily.close)))
-    .orderBy(asc(priceDaily.listingId), desc(priceDaily.tradeDate));
+    .where(and(sameCurrency, isNotNull(priceDaily.close)))
+    .orderBy(desc(priceDaily.tradeDate))
+    .limit(1)
+    .as('pick');
+  const rows = await db
+    .select({ listingId: listings.id, date: pick.date, close: pick.close })
+    .from(listings)
+    .innerJoinLateral(pick, sql`true`)
+    .where(inArray(listings.id, [...ids]));
   return new Map(usable(rows).map((r) => [r.listingId, r]));
 }
 
@@ -77,18 +89,18 @@ export async function latestCloseBefore(
   before: PlainDate,
 ): Promise<Map<string, CloseRow>> {
   if (ids.length === 0) return new Map();
-  const rows = await db
-    .selectDistinctOn([priceDaily.listingId], columns)
+  const pick = db
+    .select({ date: priceDaily.tradeDate, close: priceDaily.close })
     .from(priceDaily)
-    .innerJoin(listings, sameCurrency)
-    .where(
-      and(
-        inArray(priceDaily.listingId, [...ids]),
-        isNotNull(priceDaily.close),
-        lt(priceDaily.tradeDate, before),
-      ),
-    )
-    .orderBy(asc(priceDaily.listingId), desc(priceDaily.tradeDate));
+    .where(and(sameCurrency, isNotNull(priceDaily.close), lt(priceDaily.tradeDate, before)))
+    .orderBy(desc(priceDaily.tradeDate))
+    .limit(1)
+    .as('pick');
+  const rows = await db
+    .select({ listingId: listings.id, date: pick.date, close: pick.close })
+    .from(listings)
+    .innerJoinLateral(pick, sql`true`)
+    .where(inArray(listings.id, [...ids]));
   return new Map(usable(rows).map((r) => [r.listingId, r]));
 }
 
@@ -98,20 +110,31 @@ export async function firstCloseAfterCompleteFrom(
   ids: readonly string[],
 ): Promise<Map<string, CloseRow>> {
   if (ids.length === 0) return new Map();
-  const rows = await db
-    .selectDistinctOn([priceDaily.listingId], columns)
+  const pick = db
+    .select({ date: priceDaily.tradeDate, close: priceDaily.close })
     .from(priceDaily)
-    .innerJoin(listings, sameCurrency)
-    .innerJoin(
-      marketDataFetchState,
+    .where(
       and(
-        eq(marketDataFetchState.listingId, priceDaily.listingId),
-        eq(marketDataFetchState.kind, 'history'),
+        sameCurrency,
+        isNotNull(priceDaily.close),
         sql`${priceDaily.tradeDate} >= ${marketDataFetchState.historyCompleteFrom}`,
       ),
     )
-    .where(and(inArray(priceDaily.listingId, [...ids]), isNotNull(priceDaily.close)))
-    .orderBy(asc(priceDaily.listingId), asc(priceDaily.tradeDate));
+    .orderBy(asc(priceDaily.tradeDate))
+    .limit(1)
+    .as('pick');
+  const rows = await db
+    .select({ listingId: listings.id, date: pick.date, close: pick.close })
+    .from(listings)
+    .innerJoin(
+      marketDataFetchState,
+      and(
+        eq(marketDataFetchState.listingId, listings.id),
+        eq(marketDataFetchState.kind, 'history'),
+      ),
+    )
+    .innerJoinLateral(pick, sql`true`)
+    .where(inArray(listings.id, [...ids]));
   return new Map(usable(rows).map((r) => [r.listingId, r]));
 }
 

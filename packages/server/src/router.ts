@@ -2,6 +2,8 @@ import { implement, ORPCError } from '@orpc/server';
 import { contract } from '@waddlers/contracts';
 import { sql } from 'drizzle-orm';
 import type { SpaceRole } from '@waddlers/contracts';
+import { getHistory, getMovers, getSummary, type DashboardDeps } from './dashboard/service';
+import { FX_TOLERANCE_DAYS } from './market-data/config';
 import { requireSpaceAccess } from './spaces/access';
 import {
   getSpace,
@@ -132,6 +134,11 @@ export function createRouter({
       return next({ context: { space } });
     });
 
+  const dashboardDeps: DashboardDeps = {
+    now,
+    fxToleranceDays: FX_TOLERANCE_DAYS,
+  };
+
   let lastDbLog = 0;
 
   return os.router({
@@ -176,6 +183,17 @@ export function createRouter({
       ),
       remove: spaceScoped('editor').positions.remove.handler(({ context, input }) =>
         removeSpacePosition(deps.getDb(), context.space, input.positionId),
+      ),
+    },
+    dashboard: {
+      summary: spaceScoped('viewer').dashboard.summary.handler(({ context, input }) =>
+        getSummary(deps.getDb(), context.space, input.period, dashboardDeps),
+      ),
+      history: spaceScoped('viewer').dashboard.history.handler(({ context, input }) =>
+        getHistory(deps.getDb(), context.space, input.period, input.fxMode, dashboardDeps),
+      ),
+      movers: spaceScoped('viewer').dashboard.movers.handler(({ context, input }) =>
+        getMovers(deps.getDb(), context.space, input.period),
       ),
     },
     auth: {

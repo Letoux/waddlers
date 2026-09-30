@@ -477,6 +477,101 @@ describe('buildValueSeries (D6)', () => {
     expect(vals(r)).toEqual([['2026-06-01', '125']]); // 10 × 10 GBP / 0.8
   });
 
+  it('a downsampled series has exactly the values, headline and evolution of the full one on the kept dates', () => {
+    const dates: string[] = [];
+    for (let d = '2020-01-01'; d <= '2026-06-30'; d = addDays(d, 1)) dates.push(d);
+    const series = (base: number) =>
+      dates.map((d, i): [string, string] => [d, (base + ((i * 7) % 23) + i / 1000).toFixed(3)]);
+    const input = (maxPoints: number) => ({
+      positions: [
+        position('fr', '3', 'EUR', series(50)),
+        position('us', '2.5', 'USD', series(80)),
+        position('uk', '11', 'GBX', series(1500)),
+      ],
+      fx: fxOf({
+        USD: dates.map((d, i): [string, string] => [d, (1.05 + (i % 50) / 500).toFixed(4)]),
+        GBP: dates.map((d, i): [string, string] => [d, (0.8 + (i % 30) / 400).toFixed(4)]),
+      }),
+      from: '2020-01-01',
+      to: '2026-06-30',
+      maxPoints,
+    });
+    const full = buildValueSeries(input(10_000));
+    const small = buildValueSeries(input(400));
+    expect(full.points.length).toBe(full.totalPoints);
+    expect(small.points.length).toBe(400);
+    expect(small.totalPoints).toBe(full.totalPoints);
+    const byDate = new Map(full.points.map((p) => [p.date, p]));
+    for (const p of small.points) {
+      const f = byDate.get(p.date)!;
+      expect(p.value?.toFixed()).toBe(f.value?.toFixed());
+      expect(p.evolutionPct?.toFixed()).toBe(f.evolutionPct?.toFixed());
+      expect(p.dataDate).toBe(f.dataDate);
+      expect(p.fx.map((x) => [x.currency, x.rate.toFixed(), x.date])).toEqual(
+        f.fx.map((x) => [x.currency, x.rate.toFixed(), x.date]),
+      );
+    }
+    expect(small.headline?.change.toFixed()).toBe(full.headline?.change.toFixed());
+    expect(small.headline?.changePct?.toFixed()).toBe(full.headline?.changePct?.toFixed());
+  });
+
+  it('reports the FX rate applied to each point (major currency, forward-filled date, none for EUR)', () => {
+    const r = buildValueSeries({
+      positions: [
+        position('uk', '10', 'GBX', [
+          ['2026-06-01', '1000'],
+          ['2026-06-03', '1000'],
+        ]),
+        position('us', '1', 'USD', [['2026-06-01', '10']]),
+        position('fr', '1', 'EUR', [['2026-06-01', '5']]),
+      ],
+      fx: fxOf({
+        GBP: [
+          ['2026-06-01', '0.8'],
+          ['2026-06-03', '0.5'],
+        ],
+        USD: [['2026-06-01', '2']],
+        CHF: [['2026-06-01', '1.1']],
+      }),
+      from: '2026-06-01',
+      to: '2026-06-03',
+    });
+    const applied = (i: number) =>
+      r.points[i]?.fx.map((f) => [f.currency, f.rate.toFixed(), f.date]);
+    // Held currencies only (CHF is not held), GBX reported as GBP, USD forward-filled from 06-01.
+    expect(applied(0)).toEqual([
+      ['GBP', '0.8', '2026-06-01'],
+      ['USD', '2', '2026-06-01'],
+    ]);
+    expect(applied(1)).toEqual([
+      ['GBP', '0.5', '2026-06-03'],
+      ['USD', '2', '2026-06-01'],
+    ]);
+  });
+
+  it('omits a currency without a usable rate from the applied rates (and the day is null)', () => {
+    const r = buildValueSeries({
+      positions: [position('us', '1', 'USD', [['2026-06-01', '10']])],
+      fx: new Map(),
+      from: '2026-06-01',
+      to: '2026-06-01',
+    });
+    expect(r.points).toEqual([]);
+    const gap = buildValueSeries({
+      positions: [
+        position('us', '1', 'USD', [
+          ['2026-06-01', '10'],
+          ['2026-06-02', '10'],
+        ]),
+      ],
+      fx: fxOf({ USD: [['2026-06-02', '2']] }),
+      from: '2026-06-01',
+      to: '2026-06-02',
+    });
+    expect(gap.points).toHaveLength(1);
+    expect(gap.points[0]?.fx.map((f) => f.currency)).toEqual(['USD']);
+  });
+
   it('excludes watchlist quantities and honours the [from, to] range', () => {
     const r = buildValueSeries({
       positions: [

@@ -1,5 +1,6 @@
 import { assertReferenceCurrency, type CurrencyCode } from './currency';
 import { Decimal, asDecimal } from './decimal';
+import { normalizeCurrency } from './currency';
 import { convertAmount } from './fx';
 import { cleanSeries, resolveTolerance, type PricePoint } from './performance';
 import { assertPlainDate, compareDates, diffDays, type PlainDate } from './plain-date';
@@ -25,8 +26,22 @@ export interface FxPoint {
 /** Per major currency, daily EUR-based rates. EUR itself is implicit. */
 export type FxHistory = ReadonlyMap<CurrencyCode, readonly FxPoint[]>;
 
+/** An FX rate that was applied to a point: `1 EUR = rate <currency>` (major currency), and its date. */
+export interface AppliedRate {
+  currency: CurrencyCode;
+  rate: Decimal;
+  /** Date of the stored rate actually used (forward-filled within the tolerance), not the point date. */
+  date: PlainDate;
+}
+
 export interface SeriesPoint {
   date: PlainDate;
+  /**
+   * Rates applied to this point: one entry per non-reference major currency held by a counted
+   * position (GBX is reported as GBP) for which a rate was found, sorted by currency. A
+   * currency without a usable rate is absent (and its positions are in `missing`).
+   */
+  fx: AppliedRate[];
   /** Reference-currency value; `null` when any counted position is missing that day. */
   value: Decimal | null;
   /** Ids of counted positions that could not be valued that day (close or FX missing, invalid quantity). Empty when `value` is set. */
@@ -199,58 +214,103 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
   }
   const timeline = [...dates].sort(compareDates);
 
-  const full: SeriesPoint[] = timeline.map((date) => {
+  // Per-position facts that do not depend on the day.
+  const majors = counted.map((p) => normalizeCurrency(p.currency)?.currency ?? null);
+  const heldCurrencies = [
+    ...new Set(majors.filter((m): m is CurrencyCode => m !== null && m !== reference)),
+  ].sort();
+
+  const ratesAt = (date: PlainDate) => {
     const rates = new Map<CurrencyCode, Decimal>();
+    const rateDates = new Map<CurrencyCode, PlainDate>();
     for (const [currency, series] of fxSeries) {
       const rate = latest(series, date, tolerance);
-      if (rate !== null) rates.set(currency, rate.v);
+      if (rate !== null) {
+        rates.set(currency, rate.v);
+        rateDates.set(currency, rate.date);
+      }
     }
+    return { rates, rateDates };
+  };
+
+  /**
+   * Can `from` be converted to the reference with these rates? Exactly the failure cases of
+   * `convertAmount` (invalid currency, missing rate; EUR is implicit), so completeness is decided
+   * WITHOUT decimal arithmetic and the sums below are only computed for the points that are kept.
+   */
+  const convertible = (from: CurrencyCode | null, rates: Map<CurrencyCode, Decimal>): boolean =>
+    from !== null &&
+    (from === reference ||
+      ((from === 'EUR' || rates.has(from)) && (reference === 'EUR' || rates.has(reference))));
+
+  interface Day {
+    date: PlainDate;
+    fx: AppliedRate[];
+    missing: string[];
+    dataDate: PlainDate | null;
+  }
+
+  // Phase 1 (every date, lookups only): which positions are missing, which close date is behind
+  // the point, which rates were applied. No Decimal sum yet.
+  const days: Day[] = timeline.map((date) => {
+    const { rates, rateDates } = ratesAt(date);
     const missing: string[] = [];
     let dataDate: PlainDate | null = null;
-    let value = new Decimal(0);
-    for (const p of counted) {
-      if (!p.valid) {
+    counted.forEach((p, i) => {
+      const close = p.valid ? latest(p.closes, date, tolerance) : null;
+      if (close === null || !convertible(majors[i] ?? null, rates)) {
         missing.push(p.id);
-        continue;
+        return;
       }
-      const close = latest(p.closes, date, tolerance);
-      const converted =
-        close === null ? null : convertAmount(close.v, p.currency, reference, rates);
-      if (converted === null || !converted.ok) {
-        missing.push(p.id);
-        continue;
-      }
-      value = value.plus(p.quantity.times(converted.amount));
-      if (close !== null && (dataDate === null || compareDates(close.date, dataDate) > 0)) {
-        dataDate = close.date;
-      }
-    }
-    return {
-      date,
-      value: missing.length === 0 ? value : null,
-      missing,
-      dataDate: missing.length === 0 ? dataDate : null,
-      evolutionPct: null,
-    };
+      if (dataDate === null || compareDates(close.date, dataDate) > 0) dataDate = close.date;
+    });
+    const fx: AppliedRate[] = heldCurrencies.flatMap((currency) => {
+      const rate = rates.get(currency);
+      const rateDate = rateDates.get(currency);
+      return rate !== undefined && rateDate !== undefined
+        ? [{ currency, rate, date: rateDate }]
+        : [];
+    });
+    return { date, fx, missing, dataDate: missing.length === 0 ? dataDate : null };
   });
 
-  const firstIdx = full.findIndex((p) => p.value !== null);
-  const leadingMissing = firstIdx === 0 ? [] : [...(full[0] as SeriesPoint).missing];
+  const complete = (d: Day) => d.missing.length === 0;
+  const firstIdx = days.findIndex(complete);
+  const leadingMissing = firstIdx === 0 ? [] : [...(days[0] as Day).missing];
   if (firstIdx < 0) {
     return {
       points: [],
       headline: null,
       totalPoints: 0,
       invalidPositions,
-      leadingMissing: [...(full[0] as SeriesPoint).missing],
+      leadingMissing: [...(days[0] as Day).missing],
     };
   }
-  let lastIdx = full.length - 1;
-  while (full[lastIdx]?.value === null) lastIdx -= 1;
-  const trimmed = full.slice(firstIdx, lastIdx + 1);
+  let lastIdx = days.length - 1;
+  while (!complete(days[lastIdx] as Day)) lastIdx -= 1;
+  const trimmed = days.slice(firstIdx, lastIdx + 1);
 
-  const first = trimmed[0] as SeriesPoint & { value: Decimal };
-  const last = trimmed[trimmed.length - 1] as SeriesPoint & { value: Decimal };
+  // Phase 2: the sum, for the points that survive downsampling only (first and last always do).
+  const valueAt = (date: PlainDate): Decimal => {
+    const { rates } = ratesAt(date);
+    let value = new Decimal(0);
+    for (const p of counted) {
+      const close = latest(p.closes, date, tolerance);
+      const converted =
+        close === null ? null : convertAmount(close.v, p.currency, reference, rates);
+      if (converted === null || !converted.ok)
+        throw new Error('history: completeness invariant broken');
+      value = value.plus(p.quantity.times(converted.amount));
+    }
+    return value;
+  };
+  const kept = downsample(trimmed, maxPoints).map((d) => ({
+    ...d,
+    value: complete(d) ? valueAt(d.date) : null,
+  }));
+
+  const first = kept[0] as (typeof kept)[number] & { value: Decimal };
+  const last = kept[kept.length - 1] as (typeof kept)[number] & { value: Decimal };
   const headline: Headline | null =
     first.date === last.date
       ? null
@@ -265,8 +325,12 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
         };
 
   const start = headline !== null && headline.startValue.gt(0) ? headline.startValue : null;
-  const points = downsample(trimmed, maxPoints).map((p) => ({
-    ...p,
+  const points: SeriesPoint[] = kept.map((p) => ({
+    date: p.date,
+    fx: p.fx,
+    value: p.value,
+    missing: p.missing,
+    dataDate: p.dataDate,
     evolutionPct:
       p.value !== null && start !== null ? p.value.div(start).minus(1).times(100) : null,
   }));

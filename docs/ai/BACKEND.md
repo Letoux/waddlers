@@ -231,3 +231,52 @@ Admin CLI: `market:refresh [--quotes] [--history] [--fx] [--metrics] [<symbol>.<
 Worker: `pnpm worker` (Compose service `worker`, profile `app`, single instance only, D13). No oRPC procedure exposes market data yet (S5/S6).
 
 Tests: unit `market-data/{guard,parsing,market-hours,metrics}.test.ts`; integration `market-data/{service,history,metrics,jobs}.int.test.ts`, `db/market-schema.int.test.ts`, and the app-role smoke test runs the quote/nightly jobs with DML only. Shared helpers: `test/market-fixtures.ts` (spy provider, controllable clock).
+
+## Dashboard (S5)
+
+Code: `packages/server/src/dashboard/{repository,compute,service}.ts`, contract `packages/contracts/src/dashboard.ts`. No migration (no schema change: every read is served by the existing primary keys; see "Performance"). Decisions: D4, D5, D6, D9, D20, D21, D22 (`MVP-PLAN.md` section 7).
+
+### Procedures (all `spaceScoped('viewer')`, classified `space`, rows in the IDOR matrix)
+
+Input: `{ spaceId, period }` with `period` in `1w | 1m | 6m | 1y | 5y | max` (Zod enum, same ids as the domain `PERIODS`; a test keeps them equal). Access is resolved BEFORE validation (inaccessible space: `NOT_FOUND`), then a bad `period` is `BAD_REQUEST`. All numbers are decimal strings rounded half-even ONCE at the boundary (money and percentages: 8 decimals), unavailable = `null` (never `"0"`), money `{ amount, currency: 'EUR' }`, dates exchange-local `YYYY-MM-DD`.
+
+- `dashboard.summary({ spaceId, period })`: `total` (Money, `amount` null when nothing is valued), `isComplete`, `missing[] { positionId, name, reason }` (D5 partial total + warning; reasons `price_missing | price_invalid | fx_missing | currency_invalid | quantity_invalid`), `heldCount` / `valuedCount` / `watchlistCount`, `change` (`fromDate`, `baseDate`, `toDate`, `startValue`, `endValue`, `change`, `changePct`; `null` with fewer than two complete points) derived from the SAME series as `history` (historical FX), `leadingMissing[]`, `invalidPositions[]`, `freshness { asOf, fxAsOf, isStale, stalePositions[], staleFx[] }`, `fxRates[] { currency, ratePerEur, date }` used for the total.
+- `dashboard.history({ spaceId, period, fxMode? })`: `points[] { date, value|null, evolutionPct|null, dataDate|null, fxRates[] }` (at most 400, downsampled by the domain after trimming; first and last kept), `totalPoints`, `headline` (same shape as `summary.change`), `leadingMissing[] { positionId, name }` (D20: "pas de donnee avant la creation de X"), `invalidPositions[]`, `asOf`, `currency`, `basis: 'current_quantities_past_prices'`, `label: 'valeur des positions actuelles'` (D6; render "... depuis le <headline.baseDate>", baseDate is the real trading day, fromDate may be a weekend target), `fxMode`, `fxLabel` (`null` or `'au taux de change actuel'`), `currentFxRates` (`current` mode only).
+- `dashboard.movers({ spaceId, period })`: `gainers[]` / `losers[]` (5 each, best/worst first): `positionId, instrumentId, name, symbol, exchange { mic, name }, performancePct, baseDate, asOf, currency` (raw listing currency, D4: performance is in LOCAL currency). Source: `listing_metrics.perf_<period>` of the listing chosen per space position; null, zero and ties handled by the domain `computeMovers` (ties: name case-insensitive, then name, then id); watchlist entries are included (D9).
+
+### FX mode (D22, history only)
+
+`fxMode: 'historical' | 'current'`, default `historical`, Zod-validated (`BAD_REQUEST` otherwise). `historical`: each point is converted at that day's stored rate, forward-filled by the domain within the 10-day history tolerance (closes and FX share it; the metrics use 7 days for FX, `fxToleranceDays`). `current`: every point uses the latest stored rate per currency dated on or before the series end and at most `fxToleranceDays` (7) older; without such a rate the currency's positions are missing on every day (empty series, `leadingMissing` names them), never a rate of 1. Each point's `fxRates[] { currency, ratePerEur, eurPerUnit, rateDate }` is the rate actually applied (tooltip; `eurPerUnit` = 1 / rate, the specs 34 direction "USD/EUR : 0,85", 8 decimals, display only). A GBX position is reported with its GBP rate (minor-unit note is the UI's). In `current` mode `rateDate` is the real date of the current rate. The FX decision lives in ONE function (`historyFx` in `compute.ts`, with `readHistoryFx` in `service.ts`). The summary total always uses the latest rate; movers are local currency.
+
+### Data path (no provider call on the request path)
+
+Every read is PostgreSQL only, inside one read-only REPEATABLE READ transaction (positions, closes and FX describe one snapshot): positions + `listing_metrics` in one LEFT JOIN, closes of the HELD positions through `space_positions` (watchlist entries never enter value or series; only closes in the listing's current currency), FX for the held major currencies. Why not `MarketDataService`: see `MARKET-DATA.md` "What S5/S6 need". Current value = `listing_metrics.price` (D21 end price, raw currency) x the newest stored rate per currency in `[asOf - 7 days, asOf]` (`asOf` = newest end-price date among the held positions), through `computeSpaceValue`. The headline delta comes from the history series (closes only) and can therefore differ slightly from `total` minus the start value when the end price is a same-day quote (D21). `missing` is per position, the total is partial (never 0, `null` when nothing is valued).
+
+Freshness: a price older than 5 calendar days (weekend plus one holiday) or a rate older than 7 days versus the current UTC date is stale. `asOf` is the OLDEST valued price date, `fxAsOf` the oldest rate used. Nothing is ever labelled realtime.
+
+History window: from `target - 10 days` (base close tolerance) to the series end; `max` reads the whole stored history of the held listings (25 years x 50 positions is the worst case: about 0.6 s, see Performance). With no `listing_metrics` row for any held position there is no series end: empty series, no `leadingMissing`.
+
+### Performance (measured, test DB, in-process HTTP handler incl. auth, 50 positions, daily data)
+
+| stored history | period | summary | history | movers |
+| --- | --- | --- | --- | --- |
+| 6 years | 1m / 1y / 5y / max | 11 / 50 / 155 / 175 ms | 10 / 50 / 154 / 178 ms | 2-3 ms |
+| 25 years | 1m / 1y / 5y / max | 13 / 57 / 165 / 606 ms | 11 / 61 / 173 / 607 ms | 3 ms |
+
+The time is decimal arithmetic in the domain (closes are read in about 45 ms for 5 years), not SQL. `summary` recomputes the series (it needs the headline), so a page calling both `summary` and `history` pays it twice; a server-side memo was deliberately not added (correctness of invalidation vs a small gain). Latest/first-close reads (REVIEW-S4 R1) use `JOIN LATERAL ... LIMIT 1`: one backward index probe per listing (`EXPLAIN`: `Index Scan Backward using price_daily_listing_id_trade_date_pk`, 4 buffers per listing).
+
+### What the frontend should call (TanStack Query, specs 28)
+
+```ts
+const key = (name: string, spaceId: string, period: Period, extra?: object) =>
+  ['dashboard', name, spaceId, period, ...(extra ? [extra] : [])];
+// portfolio-value   -> orpc.dashboard.summary({ spaceId, period })             staleTime 60 s
+// portfolio-history -> orpc.dashboard.history({ spaceId, period, fxMode })     staleTime 5 min, key includes fxMode
+// top-gainers/losers-> orpc.dashboard.movers({ spaceId, period })              staleTime 5 min (one call feeds both blocks)
+```
+
+Suggested keys: `['dashboard','summary',spaceId,period]`, `['dashboard','history',spaceId,period,fxMode]`, `['dashboard','movers',spaceId,period]`. Period lives in the URL and drives all three; `fxMode` is a chart-local toggle (default `historical`). A refetch reads Postgres only. Rendering rules: `null` -> `—` (never 0); show a warning listing `missing[]` when `isComplete` is false ("total partiel"); when `freshness.isStale` say which positions/rates are old; label the chart "valeur des positions actuelles depuis le <headline.baseDate>" (+ `fxLabel` when set) and, when `leadingMissing` is not empty, "pas de donnee avant la creation de <names>"; an empty chart with `invalidPositions` or `leadingMissing` must say why; tooltip = `date`, `value`, `evolutionPct`, plus `fxRates` ("USD/EUR : 0,85" from `eurPerUnit`); a gap day (`value: null`) is a gap, not 0; a mover row links to the instrument (S9). Use `@waddlers/contracts` types (`DashboardSummaryOutput`, `DashboardHistoryOutput`, `DashboardMoversOutput`), never redefine them.
+
+### Tests (S5)
+
+Unit `dashboard/compute.test.ts` (hand-computed EUR/USD/GBX fixtures, missing FX/price, watchlist, stale flags, every period window over 6 years of weekdays, D20 trimming, movers ordering/ties/nulls, FX modes). Domain: applied-rate and downsampling-equivalence tests in `history.test.ts`. Integration `dashboard/dashboard.int.test.ts` (exact strings through the real RPC handler, every period, FX modes, validation, no `fetch`/provider, module import scan, bounded space-scoped reads) and the three procedures in `spaces/idor-matrix.int.test.ts`.

@@ -173,6 +173,7 @@ export function computeMetricsValues(input: MetricsInput): MetricsValues {
       asOf: end.asOfDate,
       end: end.price,
       historyCompleteFrom: input.historyCompleteFrom,
+      toleranceDays: METRICS_TOLERANCE_DAYS,
     });
     const stored = store(result.value, PERF_SCALE);
     values[key] = stored;
@@ -187,9 +188,16 @@ const RECOMPUTE_CHUNK = 500;
 
 type CloseRow = { date: PlainDate; close: string };
 
+/**
+ * Base-price tolerance of the metrics (calendar days). ONE constant feeds both the window read
+ * (`windowStart`) and `computePerformance` (`toleranceDays`), so the bounded read can never be
+ * narrower than what the computation may look back (REVIEW-S4 R3).
+ */
+export const METRICS_TOLERANCE_DAYS = DEFAULT_TOLERANCE_DAYS;
+
 /** Lower bound of the rows a listing needs: 60 months (the longest fixed period) + base tolerance. */
 export function windowStart(asOf: PlainDate): PlainDate {
-  return addDays(addMonths(asOf, -60), -DEFAULT_TOLERANCE_DAYS);
+  return addDays(addMonths(asOf, -60), -METRICS_TOLERANCE_DAYS);
 }
 
 interface Prepared {

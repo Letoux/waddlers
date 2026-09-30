@@ -56,6 +56,7 @@ export {
   MAX_SERIES_POINTS,
   buildValueSeries,
   downsample,
+  type AppliedRate,
   type HistoryPosition,
   type FxHistory,
   type FxPoint,
