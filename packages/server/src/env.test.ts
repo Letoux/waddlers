@@ -24,7 +24,7 @@ describe('parseEnv', () => {
     const env = parseEnv({ ...valid, MARKET_DATA_PROVIDER: '', FX_PROVIDER: '' });
     expect(env).toMatchObject({
       MARKET_DATA_PROVIDER: 'fake',
-      FX_PROVIDER: 'fake',
+      FX_PROVIDER: 'ecb',
       MARKET_DATA_QUOTE_TTL_MINUTES: 15,
       MARKET_DATA_HISTORY_TTL_HOURS: 12,
       MARKET_DATA_FX_TTL_HOURS: 12,

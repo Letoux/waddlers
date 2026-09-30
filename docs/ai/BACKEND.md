@@ -224,7 +224,7 @@ Gotchas found while testing: Drizzle renders subquery columns unqualified inside
 
 Full design, TTL table, SWR/backoff/quota semantics, market hours and the end-price rule: `docs/ai/MARKET-DATA.md`. Migration `0004_market_data.sql` is purely additive (six new tables; no existing table or data is touched, nothing destructive; the `waddlers_app` role gets DML on them through the existing default privileges).
 
-Env (web and worker, all optional): `MARKET_DATA_PROVIDER` (`fake`|`eodhd`, eodhd is a stub), `FX_PROVIDER` (`fake`|`ecb`), `EODHD_API_TOKEN` (never logged), `MARKET_DATA_QUOTE_TTL_MINUTES` (15), `MARKET_DATA_HISTORY_TTL_HOURS` (12), `MARKET_DATA_FX_TTL_HOURS` (12), `MARKET_DATA_DAILY_QUOTA` (5000), `MARKET_DATA_CONCURRENCY` (4), `MARKET_DATA_TIMEOUT_MS` (8000). The worker/CLI validate only `DATABASE_URL` plus these (`parseWorkerEnv`).
+Env (web and worker, all optional): `MARKET_DATA_PROVIDER` (`fake`|`eodhd`, eodhd is a stub), `FX_PROVIDER` (`ecb` default | `fake`; tests pin `fake` so they never hit the network), `EODHD_API_TOKEN` (never logged), `MARKET_DATA_QUOTE_TTL_MINUTES` (15), `MARKET_DATA_HISTORY_TTL_HOURS` (12), `MARKET_DATA_FX_TTL_HOURS` (12), `MARKET_DATA_DAILY_QUOTA` (5000), `MARKET_DATA_CONCURRENCY` (4), `MARKET_DATA_TIMEOUT_MS` (8000). The worker/CLI validate only `DATABASE_URL` plus these (`parseWorkerEnv`).
 
 Admin CLI: `market:refresh [--quotes] [--history] [--fx] [--metrics] [<symbol>.<MIC>]` forces a refresh past the TTLs (backoff and quota still apply; no listing = every held listing); `market:status` prints fetch-state per kind, failing entries with `next_retry_at`, provider usage and the metrics row count.
 

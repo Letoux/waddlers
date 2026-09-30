@@ -34,7 +34,7 @@ function boundedInt(min: number, max: number, fallback: number) {
  */
 export const marketDataEnvShape = {
   MARKET_DATA_PROVIDER: z.preprocess(emptyToUndefined, z.enum(['fake', 'eodhd']).default('fake')),
-  FX_PROVIDER: z.preprocess(emptyToUndefined, z.enum(['fake', 'ecb']).default('fake')),
+  FX_PROVIDER: z.preprocess(emptyToUndefined, z.enum(['fake', 'ecb']).default('ecb')),
   MARKET_DATA_QUOTE_TTL_MINUTES: boundedInt(1, 24 * 60, 15),
   MARKET_DATA_HISTORY_TTL_HOURS: boundedInt(1, 24 * 14, 12),
   MARKET_DATA_FX_TTL_HOURS: boundedInt(1, 24 * 14, 12),

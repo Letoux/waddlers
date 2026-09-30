@@ -32,7 +32,7 @@ let provider: FakeMarketDataProvider;
 
 function runtime() {
   provider = new FakeMarketDataProvider({ clock: clock.now });
-  return createMarketDataRuntime(getDb(), marketDataEnvSchema.parse({}), {
+  return createMarketDataRuntime(getDb(), marketDataEnvSchema.parse({ FX_PROVIDER: 'fake' }), {
     clock: clock.now,
     provider,
     fx: new FakeFxProvider({ clock: clock.now }),

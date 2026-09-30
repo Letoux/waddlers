@@ -302,7 +302,7 @@ describe('FX backfill coverage', () => {
 
 describe('daily quota (provider_usage) through the guarded runtime', () => {
   it('refuses calls over budget, counts per provider and UTC day, and does not back off the listing', async () => {
-    const env = marketDataEnvSchema.parse({});
+    const env = marketDataEnvSchema.parse({ FX_PROVIDER: 'fake' });
     const runtime = createMarketDataRuntime(getDb(), env, {
       clock: clock.now,
       provider,

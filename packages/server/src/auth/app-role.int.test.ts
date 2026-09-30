@@ -130,9 +130,13 @@ describe('auth flow as the DML-only app role', () => {
       SEED_USER_USERNAME: 'spaceuser',
     });
     expect(seeded.spaces.length).toBeGreaterThan(0);
-    const runtime = createMarketDataRuntime(getDb(), marketDataEnvSchema.parse({}), {
-      clock: () => new Date('2026-09-30T13:00:00Z'),
-    });
+    const runtime = createMarketDataRuntime(
+      getDb(),
+      marketDataEnvSchema.parse({ FX_PROVIDER: 'fake' }),
+      {
+        clock: () => new Date('2026-09-30T13:00:00Z'),
+      },
+    );
     const quotes = await refreshHeldQuotes({ db: getDb(), runtime });
     expect(quotes.outcomes.failed).toBe(0);
     expect(quotes.outcomes.refreshed).toBeGreaterThan(0);
