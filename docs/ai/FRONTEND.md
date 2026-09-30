@@ -22,6 +22,26 @@ Forms call the browser client (`orpc.auth.*.mutationOptions()` from `@/lib/orpc`
 - Forms use React Hook Form + `zodResolver` with the contract schemas (`loginInputSchema`, `changePasswordInputSchema`, `newPasswordSchema`, `PASSWORD_MIN_LENGTH`); only the password confirmation is UI-specific. `components/ui/form.tsx` (shadcn pattern) wires `aria-invalid` / `aria-describedby` (hint + error). Field messages are always-rendered `aria-live="polite"` regions; `aria-describedby` only references ids that exist (the description only when rendered). Form-level errors use `role="alert"`. Server errors move focus to the relevant field (`form.setFocus`). Inputs are not disabled while pending (a disabled input cannot take focus); the submit button is.
 - Success toast (`react-toastify`): "Mot de passe modifié." only. Login/logout errors are inline, not toasts (logout failure is a toast).
 
+## Spaces and positions (S3)
+
+API: `BACKEND.md` ("Spaces & positions (S3)"). Creating/renaming spaces and adding positions stay admin-only (CLI) in S3.
+
+**Routes** (all call `requireUser()`; space pages also `requireSpace(spaceId)` from `@/server/spaces`, which turns an unknown, malformed or inaccessible id into the same `notFound()`):
+
+- `/` (`(app)/page.tsx`): redirects to `/s/<activeSpaceId>` (from `spaces.list`), or shows "Aucun espace disponible. Contactez l'administrateur." when the user has none.
+- `/s/[spaceId]`: dashboard placeholder for S5 (name, role, "Titres suivis" count taken from `spaces.get().positionCount`, never from `positions.list.total`).
+- `/s/[spaceId]/titres`: `components/spaces/positions-list.tsx` (client, `useQuery(positions.list)` with `staleTime: 0`; loading, empty, error, NOT_FOUND and "liste tronquée" states; `lib/spaces/truncation.ts` is the only place that reads the cut-list flag). Simple table for S3; TanStack Table arrives with S6.
+- `/espaces`: accessible spaces with role and count, "Ouvrir" to switch.
+- `(app)/not-found.tsx` (inside the shell) and `app/not-found.tsx`: neutral French "Page introuvable", identical for unknown and inaccessible ids.
+
+**Space selection.** `(app)/layout.tsx` fetches `spaces.list` server-side and passes it as `initialData` to the client `AppHeader`, which shares the `spaces.list` TanStack cache. The current space is the one in the URL (`lib/spaces/nav.ts`), else `activeSpaceId`. The header selector (shadcn Select, label "Espace") pushes the same sub-page in the new space (`switchSpaceHref`) and fires `spaces.setActive` (`useSetActiveSpace`, silent on failure, never blocks navigation). Space pages render `ActivateSpace`, which records the opened space once when it differs from the cached `activeSpaceId`. Nav: Dashboard, Titres (only with a space), Espaces, Paramètres; `aria-current="page"` marks the active item; below `md` a Sheet menu holds the links and logout while the selector stays in the header bar.
+
+**Quantity input rules** (`lib/spaces/quantity.ts`, string-only, no float math; unit tests): whitespace (including no-break spaces) is ignored; `,` or `.` is the decimal separator (not both); `,5` becomes `0.5`; superfluous leading zeros are dropped; blank means `null`; the result is validated with the contract's `nullableQuantitySchema` (non-negative, at most 16 integer and 8 fraction digits). Display is fr-FR (`1 234,5`, U+202F group separator), `null` renders `—`, never 0 (0 is a real quantity). The raw listing currency is shown as is (`GBX` is never divided).
+
+**Editing** (owner/editor only, from `SPACE_WRITER_ROLES`; viewers get read-only values): click, Enter or blur saves, Escape cancels, invalid input keeps the editor open with an inline message. `useSetQuantity` is optimistic with rollback; success toasts "Quantité mise à jour." (and an `aria-live` status), then invalidates `positions.list` and `spaces.list`; FORBIDDEN toasts a French message, NOT_FOUND refreshes quietly. Removal (`RemovePositionButton`): confirmation dialog, `positions.remove`, toast "Titre retiré de l'espace."; a double click sends one request and NOT_FOUND closes quietly; focus returns to the trigger, or to the list region when the row is gone.
+
+E2E data: global setup also runs `pnpm db:seed` against the test database (`ALLOW_DEV_SEED=1`, random dev password) for reference data, then creates per-scenario spaces, memberships and positions through `space:create`, `space:grant` and `position:add` (`e2e/support/spaces.ts`; ids parsed from `space:create` output). Spec: `e2e/spaces.spec.ts`. The CLI cannot set a selection reason, so reasons are only checked manually on the dev seed.
+
 ## shadcn note
 
 `pnpm dlx shadcn@latest add …` in this repo generated `import { cn } from "cn"` (the npm package `cn`, unrelated to our helper) and did not overwrite `button.tsx` non-interactively. Generated files were fixed to `@/lib/utils` and the stray `cn` dependency removed; `form.tsx` was added by hand (standard shadcn form). Check imports after every `shadcn add`.

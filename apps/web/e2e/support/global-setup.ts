@@ -3,7 +3,8 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { assertSafeDatabase } from '../../test-support/safe-database';
-import { ACCOUNT_KEYS, E2E_DATABASE_URL } from './env';
+import { ACCOUNT_KEYS, E2E_DATABASE_URL, type AccountKey } from './env';
+import { SCENARIO_SPACES, spaceName } from './spaces';
 
 // Playwright runs from apps/web; walk up to the workspace root (where the pnpm scripts live).
 function findRepoRoot(): string {
@@ -16,7 +17,12 @@ function findRepoRoot(): string {
   return dir;
 }
 
-function run(cwd: string, args: string[], input?: string): Promise<void> {
+function run(
+  cwd: string,
+  args: string[],
+  input?: string,
+  extraEnv: Record<string, string> = {},
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       'pnpm',
@@ -28,11 +34,12 @@ function run(cwd: string, args: string[], input?: string): Promise<void> {
           // Both URLs point at the throwaway test database; the root .env (dev data) never wins.
           DATABASE_URL: E2E_DATABASE_URL,
           DATABASE_MIGRATE_URL: E2E_DATABASE_URL,
+          ...extraEnv,
         },
       },
-      (error, _stdout, stderr) => {
+      (error, stdout, stderr) => {
         if (error) reject(new Error(`pnpm ${args.slice(0, 3).join(' ')} failed: ${stderr}`));
-        else resolve();
+        else resolve(stdout);
       },
     );
     child.stdin?.end(input ?? '');
@@ -62,4 +69,39 @@ export default async function globalSetup() {
     ),
   );
   process.env['E2E_ACCOUNTS'] = JSON.stringify(accounts);
+
+  // Reference data (exchanges, instruments, listings) comes from the dev seed, pointed at the
+  // throwaway database. ALLOW_DEV_SEED skips the localhost/APP_ORIGIN guard; the safe-database
+  // check above already refuses non-test or remote databases.
+  await run(root, ['db:seed'], undefined, {
+    ALLOW_DEV_SEED: '1',
+    SEED_USER_PASSWORD: `pw-${randomBytes(12).toString('hex')}`,
+    NODE_ENV: 'development',
+  });
+
+  const ids: Record<string, string> = {};
+  // Per-scenario spaces, memberships and positions (through the admin CLI, like an operator).
+  await Promise.all(
+    (Object.keys(SCENARIO_SPACES) as AccountKey[]).map(async (key) => {
+      const account = accounts[key];
+      if (!account) throw new Error(`No account for ${key}`);
+      for (const space of SCENARIO_SPACES[key] ?? []) {
+        const name = spaceName(suffix, key, space.label);
+        const created = await run(root, ['admin', '--', 'space:create', name]);
+        const id = /\(([0-9a-f-]{36})\)/.exec(created)?.[1];
+        if (!id) throw new Error(`space:create printed no id for ${name}`);
+        ids[name] = id;
+        if (space.role) {
+          await run(root, ['admin', '--', 'space:grant', name, account.username, space.role]);
+        }
+        for (const position of space.positions) {
+          const args = ['admin', '--', 'position:add', name, position.listing];
+          await run(root, position.quantity ? [...args, position.quantity] : args);
+        }
+      }
+    }),
+  );
+  process.env['E2E_RUN_ID'] = suffix;
+
+  process.env['E2E_SPACE_IDS'] = JSON.stringify(ids);
 }
