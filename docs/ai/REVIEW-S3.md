@@ -49,3 +49,13 @@ Code review: approved with changes. Security audit: approved with follow-ups. St
 | 16 | Audit F3 | P3 | `decodeURIComponent` can throw in `parseSpacePath` | **Fixed** (try/catch, null; unit test). Note: Next itself answers `/s/<malformed %>` with a plain 500 before app code runs; nothing is exposed; documented, not fixable in the app. |
 | 16 | Audit F2 | P3 | Space not-found returned HTTP 200 (streamed 404 fallback) because of `loading.tsx` | **Fixed.** `(app)/loading.tsx` removed (the positions list has its own skeleton); unknown/inaccessible spaces now answer a real 404, asserted in e2e. |
 | 17 | Audit F4 | P3 | `CI=1` relaxes the safe-database host check in E2E global setup | **Accepted.** The database name must still match `(^|_)test($|_)`; CI provides its own throwaway Postgres. |
+
+## Frontend re-review (e0232c5) — verdict: approve
+
+All frontend P2s (non-retryable E2E, optimistic races, stale list after revocation, focus stealing, missing optimistic-path tests) and the financial P3s (canonical parse / no-op save, `1.234` ambiguity, space grouping) confirmed fixed; `spaces.spec.ts --repeat-each=2` 32/32.
+
+| Ref | Sev | Finding | Status |
+| --- | --- | --- | --- |
+| Re-review 1 | P3 | The last-confirmed quantity entry can outlive an edit that overlapped a failed removal; a later failed edit (with a failing refetch) could roll back to an outdated value | Open. Clear the entry in `useRemovePosition` `onSettled` when it is the last write on the row; add an edit + failing-remove unit case. |
+| Re-review 2 | P3 | Screen-reader save message not repeated for two consecutive saves of the same row (toast still announces) | Open. Clear then set the live region, or add a hidden counter. |
+| Re-review 3 | — | No navigation pending feedback since `(app)/loading.tsx` was removed (needed for a real 404) | Accepted. If noticeable, add a pending style on nav links (`useLinkStatus`), not a Suspense boundary above pages. |

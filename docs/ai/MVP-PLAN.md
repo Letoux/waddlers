@@ -1,6 +1,6 @@
 # Waddlers — MVP implementation plan
 
-Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1, S2, S3 backend (frontend pending), S4 domain module** (decisions: `docs/ai/BACKEND.md`, `docs/ai/FRONTEND.md`, `docs/ai/DOMAIN.md`; reviews: `docs/ai/REVIEW-S1.md`, `docs/ai/REVIEW-S2.md`).
+Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1, S2, S3, S4 domain module** (decisions: `docs/ai/BACKEND.md`, `docs/ai/FRONTEND.md`, `docs/ai/DOMAIN.md`; reviews: `docs/ai/REVIEW-S1.md`, `docs/ai/REVIEW-S2.md`, `docs/ai/REVIEW-S3.md`).
 Source of truth remains `specs.md`; this file records the agreed decomposition and design.
 
 ## 1. Objective
@@ -162,4 +162,4 @@ Non-blocking (can default and revisit):
 
 ## 8. Recommended next step
 
-`/implement` **S3** (spaces & positions) — every page calls `requireUser()` and reads data only through authed oRPC procedures (`docs/ai/FRONTEND.md`); IDOR security review is mandatory. Then the S4 persistence/service part (needs S3 schema). Carry-overs for S5: surface `invalidPositions` and `leadingMissing` from the history series (`docs/ai/DOMAIN.md`).
+`/implement` **S4 persistence & market-data service** — provider interface + fake provider, price/quote/FX/fetch-state tables (reference `listings(id)` ON DELETE CASCADE), MarketDataService (TTL, SWR, single-flight, backoff), `listing_metrics`, worker; security review for provider credentials. Rules carried over: pages call `requireUser()` and read data only through authed oRPC procedures (`docs/ai/FRONTEND.md`); every new procedure is classified public/user/space (`test/procedure-classification.ts`). Carry-overs for S5: surface `invalidPositions` and `leadingMissing` from the history series (`docs/ai/DOMAIN.md`). Open P3s: `docs/ai/REVIEW-S2.md`, `docs/ai/REVIEW-S3.md`.
