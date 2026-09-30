@@ -51,7 +51,7 @@ export async function runAdminCli(argv: string[], db: Database, io: CliIo): Prom
     return 1;
   };
   if (!command || params.some((p) => p.startsWith('-'))) return fail(USAGE);
-  const arity = ARITY[command];
+  const arity = Object.hasOwn(ARITY, command) ? ARITY[command] : undefined;
   if (!arity) return fail(`Unknown command: ${command}\n\n${USAGE}`);
   if (params.length < arity[0] || params.length > arity[1]) return fail(USAGE);
   const [p1 = '', p2 = '', p3 = ''] = params;
@@ -110,10 +110,11 @@ export async function runAdminCli(argv: string[], db: Database, io: CliIo): Prom
         await addPosition(db, {
           space: p1,
           listing: p2,
-          ...(p3 === '' ? {} : { quantity: p3 }),
+          // Branch on the argument count, not the value: an explicit "" is invalid, not "absent".
+          ...(params.length === 3 ? { quantity: p3 } : {}),
         });
         say(
-          `Position added to ${p1}: ${p2}${p3 === '' ? ' (watchlist, no quantity)' : ` x ${p3}`}.`,
+          `Position added to ${p1}: ${p2}${params.length === 3 ? ` x ${p3}` : ' (watchlist, no quantity)'}.`,
         );
         return 0;
       }

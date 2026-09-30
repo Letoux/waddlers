@@ -168,8 +168,8 @@ export function createRouter({
       ),
     },
     positions: {
-      list: spaceScoped('viewer').positions.list.handler(({ context }) =>
-        listSpacePositions(deps.getDb(), context.space),
+      list: spaceScoped('viewer').positions.list.handler(({ context, input }) =>
+        listSpacePositions(deps.getDb(), context.space, input.page),
       ),
       setQuantity: spaceScoped('editor').positions.setQuantity.handler(({ context, input }) =>
         setPositionQuantity(deps.getDb(), context.space, input.positionId, input.quantity),

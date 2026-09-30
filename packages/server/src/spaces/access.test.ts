@@ -10,14 +10,14 @@ describe('AuthorizedSpace is a compile-time requirement of per-space repositorie
     // Never executed: these lines only have to fail type-checking (`tsc` fails if any compiles).
     const neverRun = () => {
       // @ts-expect-error a bare space id is not an AuthorizedSpace
-      void listPositions(db, 'a-space-id', 10);
+      void listPositions(db, 'a-space-id', { offset: 0, limit: 10 });
       // @ts-expect-error a structurally similar object is not branded
       void deletePosition(db, { id: 'x', role: 'owner', userId: null }, 'p');
       // @ts-expect-error the brand cannot be forged by an object literal
       void updatePositionQuantity(db, { id: 'x', role: 'owner', userId: 'u' }, 'p', '1');
     };
     expect(typeof neverRun).toBe('function');
-    const ok = (space: AuthorizedSpace) => listPositions(db, space, 10);
+    const ok = (space: AuthorizedSpace) => listPositions(db, space, { offset: 0, limit: 10 });
     expect(typeof ok).toBe('function');
   });
 });

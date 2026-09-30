@@ -1,4 +1,5 @@
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { SPACE_WRITER_ROLES } from '@waddlers/contracts';
+import { and, asc, count, eq, exists, inArray, sql } from 'drizzle-orm';
 import type { DbExecutor } from '../db/create';
 import {
   exchanges,
@@ -26,46 +27,55 @@ export interface SpaceSummaryRow {
   positionCount: number;
 }
 
-/**
- * Literal, fully qualified SQL on purpose: Drizzle renders `${spaces.id}` unqualified in a
- * single-table select, which would silently bind to the subquery's own `id` column.
- */
-const positionCountSql = sql<number>`(
-  select count(*)::int from space_positions sp where sp.space_id = spaces.id
-)`;
-
 /** Spaces the user is a member of (the join on membership is the access rule), by name. */
 export async function listSpacesForUser(
   db: DbExecutor,
   userId: string,
 ): Promise<SpaceSummaryRow[]> {
-  const rows = await db
+  const memberSpaceIds = db
+    .select({ id: spaceMembers.spaceId })
+    .from(spaceMembers)
+    .where(eq(spaceMembers.userId, userId));
+  const counts = db
+    .select({ spaceId: spacePositions.spaceId, n: count().as('n') })
+    .from(spacePositions)
+    .where(inArray(spacePositions.spaceId, memberSpaceIds))
+    .groupBy(spacePositions.spaceId)
+    .as('position_counts');
+  return db
     .select({
       id: spaces.id,
       name: spaces.name,
       referenceCurrency: spaces.referenceCurrency,
       role: spaceMembers.role,
-      positionCount: positionCountSql,
+      positionCount: sql<number>`coalesce(${counts.n}, 0)`.mapWith(Number),
     })
     .from(spaceMembers)
     .innerJoin(spaces, eq(spaces.id, spaceMembers.spaceId))
+    .leftJoin(counts, eq(counts.spaceId, spaces.id))
     .where(eq(spaceMembers.userId, userId))
     .orderBy(asc(sql`lower(${spaces.name})`), asc(spaces.id));
-  return rows as SpaceSummaryRow[];
 }
 
 export async function getSpaceSummary(
   db: DbExecutor,
   space: AuthorizedSpace,
 ): Promise<Omit<SpaceSummaryRow, 'role'> | undefined> {
+  const counts = db
+    .select({ spaceId: spacePositions.spaceId, n: count().as('n') })
+    .from(spacePositions)
+    .where(eq(spacePositions.spaceId, space.id))
+    .groupBy(spacePositions.spaceId)
+    .as('position_counts');
   const [row] = await db
     .select({
       id: spaces.id,
       name: spaces.name,
       referenceCurrency: spaces.referenceCurrency,
-      positionCount: positionCountSql,
+      positionCount: sql<number>`coalesce(${counts.n}, 0)`.mapWith(Number),
     })
     .from(spaces)
+    .leftJoin(counts, eq(counts.spaceId, spaces.id))
     .where(eq(spaces.id, space.id))
     .limit(1);
   return row;
@@ -105,7 +115,7 @@ export interface PositionListRow {
 export async function listPositions(
   db: DbExecutor,
   space: AuthorizedSpace,
-  limit: number,
+  page: { offset: number; limit: number },
 ): Promise<PositionListRow[]> {
   return db
     .select({
@@ -129,7 +139,8 @@ export async function listPositions(
     .innerJoin(exchanges, eq(exchanges.mic, listings.exchangeMic))
     .where(eq(spacePositions.spaceId, space.id))
     .orderBy(asc(sql`lower(${instruments.name})`), asc(spacePositions.id))
-    .limit(limit);
+    .limit(page.limit)
+    .offset(page.offset);
 }
 
 export async function countPositions(db: DbExecutor, space: AuthorizedSpace): Promise<number> {
@@ -138,6 +149,21 @@ export async function countPositions(db: DbExecutor, space: AuthorizedSpace): Pr
     .from(spacePositions)
     .where(eq(spacePositions.spaceId, space.id));
   return row?.n ?? 0;
+}
+
+/**
+ * Re-checks the writer role inside the write itself, so a membership revoked or downgraded between
+ * `requireSpaceAccess` and the statement cannot be written through (no check-then-act window).
+ * Operator access (no user) has nothing to re-check.
+ */
+function writerGuard(space: AuthorizedSpace) {
+  const userId = space.userId;
+  if (userId === null) return undefined;
+  return exists(
+    sql`(select 1 from ${spaceMembers} where ${spaceMembers.spaceId} = ${space.id}
+      and ${spaceMembers.userId} = ${userId}
+      and ${inArray(spaceMembers.role, [...SPACE_WRITER_ROLES])})`,
+  );
 }
 
 /** The position id is resolved inside the space: an id from another space updates nothing. */
@@ -150,7 +176,13 @@ export async function updatePositionQuantity(
   const [row] = await db
     .update(spacePositions)
     .set({ quantity, updatedAt: sql`now()` })
-    .where(and(eq(spacePositions.id, positionId), eq(spacePositions.spaceId, space.id)))
+    .where(
+      and(
+        eq(spacePositions.id, positionId),
+        eq(spacePositions.spaceId, space.id),
+        writerGuard(space),
+      ),
+    )
     .returning({ id: spacePositions.id, quantity: spacePositions.quantity });
   return row;
 }
@@ -162,7 +194,13 @@ export async function deletePosition(
 ): Promise<boolean> {
   const rows = await db
     .delete(spacePositions)
-    .where(and(eq(spacePositions.id, positionId), eq(spacePositions.spaceId, space.id)))
+    .where(
+      and(
+        eq(spacePositions.id, positionId),
+        eq(spacePositions.spaceId, space.id),
+        writerGuard(space),
+      ),
+    )
     .returning({ id: spacePositions.id });
   return rows.length > 0;
 }

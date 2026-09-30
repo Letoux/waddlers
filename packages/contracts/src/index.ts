@@ -153,15 +153,29 @@ export const positionRowSchema = z.object({
 });
 export type PositionRow = z.infer<typeof positionRowSchema>;
 
-/** `positions.list` returns at most this many rows (S6 adds server pagination). */
+/** `positions.list` returns at most this many rows per page (S6 adds server sort, filter and search). */
 export const POSITIONS_LIST_MAX = 1000;
+
+/**
+ * Omitted `page` = first page of `POSITIONS_LIST_MAX` rows (the S3 behaviour). Offset pagination
+ * over a stable order (instrument name case-insensitive, then id).
+ */
+export const positionsListInputSchema = spaceIdInputSchema.extend({
+  page: z
+    .object({
+      offset: z.number().int().min(0).default(0),
+      limit: z.number().int().min(1).max(POSITIONS_LIST_MAX).default(POSITIONS_LIST_MAX),
+    })
+    .optional(),
+});
+export type PositionsListInput = z.infer<typeof positionsListInputSchema>;
 
 export const positionsListOutputSchema = z.object({
   rows: z.array(positionRowSchema),
-  /** Total positions in the space (may exceed `rows.length`). */
+  /** Positions matching the query (today: every position of the space), not just this page. */
   total: z.number().int().min(0),
-  /** True when `total` exceeds the cap and `rows` is cut. */
-  truncated: z.boolean(),
+  /** `offset + rows.length < total`: more rows exist after this page. */
+  hasMore: z.boolean(),
 });
 export type PositionsListOutput = z.infer<typeof positionsListOutputSchema>;
 
@@ -218,7 +232,8 @@ export const contract = {
     setActive: oc.input(spaceIdInputSchema).output(z.object({ activeSpaceId: z.uuid() })),
   },
   positions: {
-    list: oc.input(spaceIdInputSchema).output(positionsListOutputSchema),
+    /** `asOf` (data freshness) is added with the market data in S4/S6. */
+    list: oc.input(positionsListInputSchema).output(positionsListOutputSchema),
     /** owner/editor only. `quantity: null` turns the entry into a watchlist entry. */
     setQuantity: oc
       .input(setQuantityInputSchema)

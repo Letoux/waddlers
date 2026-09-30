@@ -1,3 +1,4 @@
+import { and, eq } from 'drizzle-orm';
 import { getDb } from '../src/db/client';
 import {
   exchanges,
@@ -64,20 +65,21 @@ export async function ensureReferenceData() {
       .insert(instruments)
       .values({ name: d.name, isin: d.isin, type: d.type })
       .onConflictDoNothing();
-    const instrument = (await db.select().from(instruments)).find((i) => i.isin === d.isin)!;
+    const [instrument] = await db.select().from(instruments).where(eq(instruments.isin, d.isin));
     await db
       .insert(listings)
       .values({
-        instrumentId: instrument.id,
+        instrumentId: instrument!.id,
         exchangeMic: d.mic,
         symbol: d.symbol,
         currency: d.currency,
       })
       .onConflictDoNothing();
-    const listing = (await db.select().from(listings)).find(
-      (l) => l.exchangeMic === d.mic && l.symbol === d.symbol,
-    )!;
-    out[d.key] = { instrumentId: instrument.id, listingId: listing.id };
+    const [listing] = await db
+      .select()
+      .from(listings)
+      .where(and(eq(listings.exchangeMic, d.mic), eq(listings.symbol, d.symbol)));
+    out[d.key] = { instrumentId: instrument!.id, listingId: listing!.id };
   }
   return out as Record<'ai' | 'shel' | 'cw8' | 'msft', { instrumentId: string; listingId: string }>;
 }

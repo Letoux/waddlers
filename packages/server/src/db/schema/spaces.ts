@@ -11,7 +11,6 @@ import {
   unique,
   uuid,
 } from 'drizzle-orm/pg-core';
-import { instruments } from './instruments';
 import { listings } from './listings';
 import { citext } from './citext';
 import { users } from './users';
@@ -41,7 +40,15 @@ export const spaces = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    check('spaces_reference_currency_format', sql`${table.referenceCurrency} ~ '^[A-Z]{3}$'`),
+    // Major currencies only: minor-unit spellings must never be a reference currency.
+    check(
+      'spaces_reference_currency_format',
+      sql`${table.referenceCurrency} ~ '^[A-Z]{3}$' and ${table.referenceCurrency} not in ('GBX', 'ZAC', 'ILA')`,
+    ),
+    check(
+      'spaces_name_valid',
+      sql`length(btrim(${table.name}::text)) > 0 and char_length(${table.name}::text) <= 64`,
+    ),
   ],
 );
 
@@ -73,7 +80,11 @@ export const spacePositions = pgTable(
       .notNull()
       .references(() => spaces.id, { onDelete: 'cascade' }),
     instrumentId: uuid('instrument_id').notNull(),
-    /** Listing chosen for this space (D8). Must belong to `instrumentId` (composite FK). */
+    /**
+     * Listing chosen for this space (D8). The composite FK (listing, instrument) -> listings
+     * guarantees it belongs to `instrumentId`; that FK also enforces the instrument's existence
+     * and its RESTRICT (listings reference instruments), so no separate instrument FK/index exists.
+     */
     listingId: uuid('listing_id').notNull(),
     /** Why this listing was retained (specs 35). Null = not recorded; never invented. */
     selectionReason: text('selection_reason'),
@@ -85,16 +96,10 @@ export const spacePositions = pgTable(
   (table) => [
     unique('space_positions_space_instrument_unique').on(table.spaceId, table.instrumentId),
     index('space_positions_listing_id_idx').on(table.listingId),
-    index('space_positions_instrument_id_idx').on(table.instrumentId),
     foreignKey({
       name: 'space_positions_listing_instrument_fk',
       columns: [table.listingId, table.instrumentId],
       foreignColumns: [listings.id, listings.instrumentId],
-    }).onDelete('restrict'),
-    foreignKey({
-      name: 'space_positions_instrument_id_fk',
-      columns: [table.instrumentId],
-      foreignColumns: [instruments.id],
     }).onDelete('restrict'),
     // `<> 'NaN'` matters: PostgreSQL orders NaN above every number, so `>= 0` alone accepts it.
     check(

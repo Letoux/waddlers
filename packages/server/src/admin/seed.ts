@@ -82,47 +82,67 @@ export async function seedDevUser(
 /**
  * Dev seed for the whole workspace: the dev user (see `seedDevUser`), realistic reference data
  * and three spaces: "PEA" (dev is owner, one watchlist entry), "Actions US" (dev is viewer) and
- * "Famille" (dev has NO access: for manual IDOR checks). Idempotent by natural keys and never
- * overwrites what already exists (an edited quantity or role survives a re-run).
+ * "Famille" (nobody has access: for manual IDOR checks).
+ *
+ * Safety semantics (the seed must never attach to data it did not create):
+ * - a space is only filled (members, positions) when THIS run created it (`insert ... returning`);
+ *   a pre-existing space with the same name is left completely untouched;
+ * - memberships are only granted to the dev user when THIS run created that user, so an existing
+ *   account (even one named like SEED_USER_USERNAME) never receives grants;
+ * - each space is seeded in one transaction (all or nothing).
+ * Consequently a re-run changes nothing: it does not resurrect deleted positions or revoked
+ * memberships, and never overwrites an edited quantity or role. Spaces created for a pre-existing
+ * user have no member: grant access with `space:grant`.
  */
 export async function seedDevWorkspace(
   db: Database,
   env: Record<string, string | undefined>,
 ): Promise<{
   user: { status: 'created' | 'exists'; username: string };
-  spaces: { name: string; id: string; access: SpaceRole | null }[];
+  spaces: { name: string; id: string; created: boolean; access: SpaceRole | null }[];
 }> {
   const user = await seedDevUser(db, env);
   await seedReferenceData(db);
-  const result: { name: string; id: string; access: SpaceRole | null }[] = [];
+  const result: { name: string; id: string; created: boolean; access: SpaceRole | null }[] = [];
   for (const def of DEV_SPACES) {
-    await db.insert(spaces).values({ name: def.name }).onConflictDoNothing({ target: spaces.name });
-    const [space] = await db
-      .select({ id: spaces.id })
-      .from(spaces)
-      .where(eq(spaces.name, def.name));
-    if (!space) throw new AdminError('Seed failed: space missing after insert.');
-    if (def.devRole) {
-      await db
-        .insert(spaceMembers)
-        .values({ spaceId: space.id, userId: user.id, role: def.devRole })
-        .onConflictDoNothing();
-    }
-    const access = operatorSpaceAccess(space.id);
-    for (const p of def.positions) {
-      const [listing] = await db
-        .select({ id: listings.id, instrumentId: listings.instrumentId })
-        .from(listings)
-        .where(and(eq(listings.exchangeMic, p.mic), eq(listings.symbol, p.symbol)));
-      if (!listing) throw new AdminError('Seed failed: listing missing.');
-      await insertPosition(db, access, {
-        instrumentId: listing.instrumentId,
-        listingId: listing.id,
-        quantity: p.quantity,
-        selectionReason: p.reason,
-      });
-    }
-    result.push({ name: def.name, id: space.id, access: def.devRole });
+    const outcome = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(spaces)
+        .values({ name: def.name })
+        .onConflictDoNothing({ target: spaces.name })
+        .returning({ id: spaces.id });
+      if (!created) {
+        const [existing] = await tx
+          .select({ id: spaces.id })
+          .from(spaces)
+          .where(eq(spaces.name, def.name));
+        if (!existing) throw new AdminError('Seed failed: space vanished.');
+        return { id: existing.id, created: false, access: null };
+      }
+      let access: SpaceRole | null = null;
+      if (def.devRole && user.status === 'created') {
+        await tx
+          .insert(spaceMembers)
+          .values({ spaceId: created.id, userId: user.id, role: def.devRole });
+        access = def.devRole;
+      }
+      const operator = operatorSpaceAccess(created.id);
+      for (const p of def.positions) {
+        const [listing] = await tx
+          .select({ id: listings.id, instrumentId: listings.instrumentId })
+          .from(listings)
+          .where(and(eq(listings.exchangeMic, p.mic), eq(listings.symbol, p.symbol)));
+        if (!listing) throw new AdminError('Seed failed: listing missing.');
+        await insertPosition(tx, operator, {
+          instrumentId: listing.instrumentId,
+          listingId: listing.id,
+          quantity: p.quantity,
+          selectionReason: p.reason,
+        });
+      }
+      return { id: created.id, created: true, access };
+    });
+    result.push({ name: def.name, ...outcome });
   }
   return { user: { status: user.status, username: user.username }, spaces: result };
 }

@@ -20,6 +20,7 @@ export const instruments = pgTable(
   },
   (table) => [
     check('instruments_type_check', sql`${table.type} in ('stock', 'etf')`),
+    check('instruments_name_not_blank', sql`length(btrim(${table.name})) > 0`),
     check('instruments_isin_format', sql`${table.isin} ~ '^[A-Z]{2}[A-Z0-9]{9}[0-9]$'`),
   ],
 );

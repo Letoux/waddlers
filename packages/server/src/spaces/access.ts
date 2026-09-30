@@ -66,7 +66,8 @@ export async function requireSpaceAccess(
     .limit(1);
   if (!member || !isSpaceRole(member.role)) throw notFound();
   if (!roleAtLeast(member.role, minRole)) throw forbidden();
-  return mint(id.data, member.role, ctx.userId);
+  // Canonical lower-case id: what is minted matches what is stored, whatever case the client sent.
+  return mint(id.data.toLowerCase(), member.role, ctx.userId);
 }
 
 function mint(id: string, role: SpaceRole, userId: string | null): AuthorizedSpace {

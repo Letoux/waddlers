@@ -12,9 +12,12 @@ try {
   const result = await seedDevWorkspace(db, process.env);
   console.log(`Seed user "${result.user.username}": ${result.user.status}.`);
   for (const space of result.spaces) {
-    console.log(
-      `Space "${space.name}" (${space.id}): ${space.access ? `you are ${space.access}` : 'NO access (IDOR check)'}.`,
-    );
+    const state = space.created
+      ? space.access
+        ? `created, you are ${space.access}`
+        : 'created, no member (pnpm admin -- space:grant ...)'
+      : 'already exists, left untouched';
+    console.log(`Space "${space.name}" (${space.id}): ${state}.`);
   }
 } catch (error) {
   console.error(error instanceof AdminError ? error.message : 'Seed failed.');

@@ -99,5 +99,43 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // The AuthorizedSpace brand (spaces/access.ts) is the compile-time authorization guarantee:
+    // it may only be created by requireSpaceAccess / operatorSpaceAccess, never by a cast.
+    files: ['packages/server/**/*.ts'],
+    ignores: ['packages/server/src/spaces/access.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'TSAsExpression[typeAnnotation.typeName.name="AuthorizedSpace"]',
+          message: 'Never cast to AuthorizedSpace: obtain it from requireSpaceAccess.',
+        },
+        {
+          selector: 'TSTypeAssertion[typeAnnotation.typeName.name="AuthorizedSpace"]',
+          message: 'Never cast to AuthorizedSpace: obtain it from requireSpaceAccess.',
+        },
+      ],
+    },
+  },
+  {
+    // Operator (userless) space access is for the admin CLI / dev seed only, never a request path.
+    files: ['packages/server/**/*.ts', 'apps/worker/**/*.ts'],
+    ignores: ['packages/server/src/admin/**', 'packages/server/src/spaces/access.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/spaces/access'],
+              importNames: ['operatorSpaceAccess'],
+              message: 'operatorSpaceAccess is reserved for src/admin/** (CLI and seed).',
+            },
+          ],
+        },
+      ],
+    },
+  },
   prettier,
 );

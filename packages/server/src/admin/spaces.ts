@@ -1,9 +1,9 @@
 import { quantitySchema, spaceRoleSchema, type SpaceRole } from '@waddlers/contracts';
-import { asc, eq, sql } from 'drizzle-orm';
+import { and, asc, count, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { findUserByUsername } from '../auth/users';
 import type { Database } from '../db/create';
-import { listings, spaceMembers, spaces } from '../db/schema';
+import { listings, spaceMembers, spacePositions, spaces } from '../db/schema';
 import { operatorSpaceAccess } from '../spaces/access';
 import { findTrackedListing, insertPosition } from '../spaces/repository';
 import { AdminError } from './errors';
@@ -82,7 +82,7 @@ export async function grantSpace(
   const [existing] = await db
     .select({ role: spaceMembers.role })
     .from(spaceMembers)
-    .where(sql`${spaceMembers.spaceId} = ${spaceId} and ${spaceMembers.userId} = ${user.id}`);
+    .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, user.id)));
   await db
     .insert(spaceMembers)
     .values({ spaceId, userId: user.id, role: role.data })
@@ -103,7 +103,7 @@ export async function revokeSpace(
   if (!user) throw new AdminError('User not found');
   const rows = await db
     .delete(spaceMembers)
-    .where(sql`${spaceMembers.spaceId} = ${spaceId} and ${spaceMembers.userId} = ${user.id}`)
+    .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, user.id)))
     .returning({ userId: spaceMembers.userId });
   return { removed: rows.length > 0 };
 }
@@ -116,14 +116,27 @@ export interface AdminSpaceRow {
 }
 
 export async function listAllSpaces(db: Database): Promise<AdminSpaceRow[]> {
+  // Drizzle renders subquery columns unqualified inside sql``: the aliases must be unique.
+  const memberCounts = db
+    .select({ spaceId: spaceMembers.spaceId, memberCount: count().as('member_count') })
+    .from(spaceMembers)
+    .groupBy(spaceMembers.spaceId)
+    .as('member_counts');
+  const positionCounts = db
+    .select({ spaceId: spacePositions.spaceId, positionCount: count().as('position_count') })
+    .from(spacePositions)
+    .groupBy(spacePositions.spaceId)
+    .as('position_counts');
   return db
     .select({
       id: spaces.id,
       name: spaces.name,
-      members: sql<number>`(select count(*)::int from space_members sm where sm.space_id = spaces.id)`,
-      positions: sql<number>`(select count(*)::int from space_positions sp where sp.space_id = spaces.id)`,
+      members: sql<number>`coalesce(${memberCounts.memberCount}, 0)`.mapWith(Number),
+      positions: sql<number>`coalesce(${positionCounts.positionCount}, 0)`.mapWith(Number),
     })
     .from(spaces)
+    .leftJoin(memberCounts, eq(memberCounts.spaceId, spaces.id))
+    .leftJoin(positionCounts, eq(positionCounts.spaceId, spaces.id))
     .orderBy(asc(sql`lower(${spaces.name})`));
 }
 
@@ -162,7 +175,7 @@ export async function addPosition(
   const [listing] = await db
     .select({ id: listings.id, instrumentId: listings.instrumentId })
     .from(listings)
-    .where(sql`${listings.exchangeMic} = ${mic} and ${listings.symbol} = ${symbol}`)
+    .where(and(eq(listings.exchangeMic, mic), eq(listings.symbol, symbol)))
     .limit(1);
   if (!listing) throw new AdminError('Unknown listing (reference data is not loaded for it)');
   const space = operatorSpaceAccess(spaceId);

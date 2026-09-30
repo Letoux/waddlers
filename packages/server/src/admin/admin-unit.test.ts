@@ -34,7 +34,9 @@ function io() {
   const cliIo: CliIo = {
     out: out.stream,
     err: err.stream,
-    readSecret: vi.fn<CliIo['readSecret']>(),
+    readSecret: vi.fn<CliIo['readSecret']>(() => {
+      throw new Error('readSecret must not be called');
+    }),
     interactive: false,
   };
   return { cliIo, readSecret: cliIo.readSecret as ReturnType<typeof vi.fn>, out, err };
@@ -170,10 +172,19 @@ describe('space commands (argument handling, no database)', () => {
     [['position:add', 'a']],
     [['position:add', 'a', 'AI.XPAR', '1', 'extra']],
     [['position:add', 'a', 'AI.XPAR', '--quantity=1']],
+    [['constructor', 'a']],
+    [['__proto__']],
+    [['toString']],
   ])('%j prints usage and exits 1', async (argv) => {
     const i = io();
     expect(await runAdminCli(argv, noDb, i.cliIo)).toBe(1);
     expect(i.err.text()).toContain('Usage');
+  });
+
+  it('an explicit empty quantity is invalid (not a watchlist entry)', async () => {
+    const i = io();
+    expect(await runAdminCli(['position:add', 'PEA', 'AI.XPAR', ''], noDb, i.cliIo)).toBe(1);
+    expect(i.err.text()).toContain('Invalid quantity');
   });
 
   it('rejects bad input before touching the database', async () => {

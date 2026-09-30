@@ -7,7 +7,7 @@ import {
   type SpacesListOutput,
 } from '@waddlers/contracts';
 import { normalizeCurrency } from '@waddlers/domain';
-import type { DbExecutor } from '../db/create';
+import type { Database, DbExecutor } from '../db/create';
 import type { AuthorizedSpace } from './access';
 import {
   countPositions,
@@ -78,15 +78,26 @@ export function toPositionRow(row: PositionListRow): PositionRow {
   };
 }
 
+/**
+ * One page of positions. Rows and total are read in a single read-only REPEATABLE READ
+ * transaction so they describe the same snapshot (a concurrent add/remove cannot make `total`
+ * and `hasMore` disagree with `rows`).
+ */
 export async function listSpacePositions(
-  db: DbExecutor,
+  db: Database,
   space: AuthorizedSpace,
+  page?: { offset?: number; limit?: number },
 ): Promise<PositionsListOutput> {
-  const [rows, total] = await Promise.all([
-    listPositions(db, space, POSITIONS_LIST_MAX),
-    countPositions(db, space),
-  ]);
-  return { rows: rows.map(toPositionRow), total, truncated: total > rows.length };
+  const offset = page?.offset ?? 0;
+  const limit = page?.limit ?? POSITIONS_LIST_MAX;
+  const { rows, total } = await db.transaction(
+    async (tx) => ({
+      rows: await listPositions(tx, space, { offset, limit }),
+      total: await countPositions(tx, space),
+    }),
+    { isolationLevel: 'repeatable read', accessMode: 'read only' },
+  );
+  return { rows: rows.map(toPositionRow), total, hasMore: offset + rows.length < total };
 }
 
 export async function setPositionQuantity(

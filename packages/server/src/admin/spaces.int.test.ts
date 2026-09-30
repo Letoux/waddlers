@@ -179,7 +179,9 @@ describe('dev workspace seed', () => {
     });
     const before = await counts();
     expect(before).toMatchObject({ exchanges: 5, spaces: 3, members: 2 });
-    expect(before.instruments).toBeGreaterThanOrEqual(8);
+    expect(before.instruments).toBe(10);
+    expect(before.listings).toBe(10);
+    expect(before.providerIds).toBe(10);
 
     const { rpc, loginAs } = createApp();
     const cookie = await loginAs('devuser');
@@ -241,13 +243,60 @@ describe('dev workspace seed', () => {
     expect(await getDb().select().from(spaces)).toHaveLength(0);
   });
 
-  it('adds spaces to an already existing dev user without touching its password', async () => {
+  it('never grants anything to a pre-existing user, even one named like SEED_USER_USERNAME', async () => {
     const created = await createUser(getDb(), { username: 'devuser', password: PASSWORD });
     const [before] = await getDb().select().from(users).where(eq(users.id, created.id));
     const result = await seedDevWorkspace(getDb(), { ...env(), SEED_USER_PASSWORD: undefined });
     expect(result.user.status).toBe('exists');
-    expect(await getDb().select().from(spaceMembers)).toHaveLength(2);
+    expect(result.spaces.every((s) => s.access === null)).toBe(true);
+    expect(await getDb().select().from(spaceMembers)).toHaveLength(0);
     const [after] = await getDb().select().from(users).where(eq(users.id, created.id));
     expect(after?.passwordHash).toBe(before?.passwordHash);
+  });
+
+  it('leaves a pre-existing space of the same name completely untouched', async () => {
+    const owner = await createUser(getDb(), { username: 'realowner', password: PASSWORD });
+    const [real] = await getDb()
+      .insert(spaces)
+      .values({ name: 'PEA' })
+      .returning({ id: spaces.id });
+    await getDb()
+      .insert(spaceMembers)
+      .values({ spaceId: real!.id, userId: owner.id, role: 'owner' });
+
+    const result = await seedDevWorkspace(getDb(), env());
+    const pea = result.spaces.find((s) => s.name === 'PEA')!;
+    expect(pea).toMatchObject({ id: real!.id, created: false, access: null });
+
+    // No dev membership, no positions were attached to the real space, nobody else's role changed.
+    const members = await getDb()
+      .select()
+      .from(spaceMembers)
+      .where(eq(spaceMembers.spaceId, real!.id));
+    expect(members).toEqual([expect.objectContaining({ userId: owner.id, role: 'owner' })]);
+    expect(
+      await getDb().select().from(spacePositions).where(eq(spacePositions.spaceId, real!.id)),
+    ).toHaveLength(0);
+    // The other seeded spaces are still created normally.
+    expect(result.spaces.filter((s) => s.created).map((s) => s.name)).toEqual([
+      'Actions US',
+      'Famille',
+    ]);
+  });
+
+  it('a re-run does not resurrect deleted positions or revoked memberships', async () => {
+    const first = await seedDevWorkspace(getDb(), env());
+    const pea = first.spaces.find((s) => s.name === 'PEA')!;
+    const us = first.spaces.find((s) => s.name === 'Actions US')!;
+    await getDb().delete(spacePositions).where(eq(spacePositions.spaceId, pea.id));
+    await getDb().delete(spaceMembers).where(eq(spaceMembers.spaceId, us.id));
+    const second = await seedDevWorkspace(getDb(), { ...env(), SEED_USER_PASSWORD: undefined });
+    expect(second.spaces.every((s) => !s.created)).toBe(true);
+    expect(
+      await getDb().select().from(spacePositions).where(eq(spacePositions.spaceId, pea.id)),
+    ).toHaveLength(0);
+    expect(
+      await getDb().select().from(spaceMembers).where(eq(spaceMembers.spaceId, us.id)),
+    ).toHaveLength(0);
   });
 });

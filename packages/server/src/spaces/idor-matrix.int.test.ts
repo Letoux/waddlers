@@ -1,5 +1,3 @@
-import { traverseContractProcedures } from '@orpc/server';
-import { contract } from '@waddlers/contracts';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createUser, disableUser } from '../admin';
@@ -12,6 +10,7 @@ import {
   resetAuthTables,
   useTestEnv,
 } from '../../test/auth-harness';
+import { allContractPaths, CLASSIFICATION } from '../../test/procedure-classification';
 import { createPositionRow, createSpaceRow, ensureReferenceData } from '../../test/space-fixtures';
 
 /**
@@ -274,30 +273,16 @@ describe('spaces.list (user-scoped, not space-scoped)', () => {
 });
 
 describe('the matrix covers the whole contract', () => {
-  /** Procedures whose input has a `spaceId` (the ones that must be in the matrix). */
-  function spaceScopedPaths(): string[] {
-    const found: string[] = [];
-    traverseContractProcedures({ path: [], router: contract }, ({ path, contract: proc }) => {
-      const schema = (proc as { '~orpc': { inputSchema?: { shape?: Record<string, unknown> } } })[
-        '~orpc'
-      ].inputSchema;
-      if (schema?.shape && 'spaceId' in schema.shape) found.push(path.join('.'));
-    });
-    return found.sort();
-  }
-
-  it('lists exactly the procedures that take a spaceId', () => {
-    expect(spaceScopedPaths()).toEqual(PROCEDURES.map((p) => p.path).sort());
+  it('contains exactly the procedures classified as space-scoped', () => {
+    const spacePaths = Object.entries(CLASSIFICATION)
+      .filter(([, c]) => c === 'space')
+      .map(([p]) => p)
+      .sort();
+    expect(spacePaths).toEqual(PROCEDURES.map((p) => p.path).sort());
   });
 
-  it('every procedure of the space and position namespaces is either in the matrix or user-scoped', () => {
-    const all: string[] = [];
-    traverseContractProcedures({ path: [], router: contract }, ({ path }) => {
-      all.push(path.join('.'));
-    });
-    const namespaced = all.filter((p) => p.startsWith('spaces.') || p.startsWith('positions.'));
-    const userScoped = ['spaces.list'];
-    expect(namespaced.sort()).toEqual([...PROCEDURES.map((p) => p.path), ...userScoped].sort());
+  it('classification covers the whole contract (see contract-classification.test.ts)', () => {
+    expect(Object.keys(CLASSIFICATION).sort()).toEqual(allContractPaths());
   });
 });
 

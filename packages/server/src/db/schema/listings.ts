@@ -27,7 +27,12 @@ export const listings = pgTable(
     // Target of the composite FK from space_positions: a position's listing must belong to its instrument.
     unique('listings_id_instrument_unique').on(table.id, table.instrumentId),
     index('listings_instrument_id_idx').on(table.instrumentId),
-    check('listings_currency_format', sql`${table.currency} ~ '^[A-Za-z]{3}$'`),
+    // Raw provider code: 3 uppercase letters, or a known lower-case minor unit (kept in sync with
+    // MINOR_UNITS in @waddlers/domain; a test asserts it). Mixed case otherwise is rejected.
+    check(
+      'listings_currency_format',
+      sql`${table.currency} ~ '^[A-Z]{3}$' or ${table.currency} in ('GBp', 'ZAc')`,
+    ),
     check('listings_symbol_not_blank', sql`length(btrim(${table.symbol})) > 0`),
   ],
 );
