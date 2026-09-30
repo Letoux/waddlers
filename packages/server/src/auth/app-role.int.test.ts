@@ -146,5 +146,7 @@ describe('auth flow as the DML-only app role', () => {
     expect(nightly.metrics).toBeGreaterThan(0);
     expect((await getDb().select().from(listingMetrics)).length).toBe(nightly.metrics);
     expect((await getDb().select().from(providerUsage))[0]?.calls).toBeGreaterThan(0);
-  });
+    // Full fake backfill since 1999 for every seeded listing: a privileges smoke test, not a
+    // latency test. CI runners are slower than local machines.
+  }, 60_000);
 });

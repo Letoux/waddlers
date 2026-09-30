@@ -1,5 +1,5 @@
 import { eq, sql } from 'drizzle-orm';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished } from 'vitest';
 import { getDb } from '../db/client';
 import {
   exchanges,
@@ -194,6 +194,13 @@ describe('runNightly really pulls (review P2-2, P2-3)', () => {
       .update(exchanges)
       .set({ timezone: 'Not/A_Zone' })
       .where(eq(exchanges.mic, 'XLON'));
+    // Exchanges are shared reference data: restore XLON so later test files are unaffected.
+    onTestFinished(async () => {
+      await getDb()
+        .update(exchanges)
+        .set({ timezone: 'Europe/London' })
+        .where(eq(exchanges.mic, 'XLON'));
+    });
     const rt = runtime();
     await upsertQuotes(
       getDb(),
