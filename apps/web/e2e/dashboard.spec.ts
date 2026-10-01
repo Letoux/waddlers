@@ -24,7 +24,7 @@ async function openDashboard(page: Page) {
   await expect(page).toHaveURL(/\/s\/[0-9a-f-]{36}/);
   await expect(page.getByTestId('total-value')).toBeVisible();
 }
-const plot = (page: Page) => page.getByTestId('history-plot').locator('.recharts-area-curve');
+const plot = (page: Page) => page.getByTestId('history-plot').locator('.recharts-line-curve');
 
 test.describe('dashboard', () => {
   test('shows the value, the chart and the movers', async ({ page, scenario }) => {
@@ -117,7 +117,7 @@ test.describe('dashboard', () => {
     await expect(tip).toContainText('Valeur');
     await expect(tip).toContainText('Évolution');
     await expect(page.getByTestId('tooltip-fx')).toContainText(
-      /USD\/EUR\s: 0,\d{4} \(taux du \d{2}\/\d{2}\/\d{4}\)/,
+      /USD\/EUR\s: 0,\d{3,} \(taux du \d{2}\/\d{2}\/\d{4}\)/,
     );
     await expect(page.getByTestId('tooltip-fx')).toContainText(/GBP\/EUR/);
     await expect(page.getByTestId('tooltip-fx')).toContainText('GBX');
@@ -137,7 +137,7 @@ test.describe('dashboard', () => {
     await expect(warning).toContainText('cours indisponible');
     // D20: nothing to draw while a counted position has no data, and the page says why.
     await expect(page.getByTestId('chart-notices')).toContainText(
-      'Pas de donnée avant la création de',
+      'Pas de donnée avant le début de l’historique disponible de',
     );
     await expect(page.getByTestId('total-value')).not.toHaveText('—');
   });

@@ -1,5 +1,5 @@
 export interface DashboardLimiterOptions {
-  /** Requests of one user allowed to run at the same time. */
+  /** Requests of one user allowed to run at the same time, per procedure. */
   maxConcurrent: number;
   /** Sustained rate per user (token bucket, capacity = one minute of it). */
   ratePerMinute: number;
@@ -17,13 +17,15 @@ export const DASHBOARD_RATE_PER_MINUTE = 30;
 interface Entry {
   tokens: number;
   updatedAt: number;
-  inFlight: number;
+  /** In-flight count per procedure: a summary and a history of the same period do not compete. */
+  inFlight: Map<string, number>;
 }
 
 /**
  * Per-user admission for the heavy dashboard procedures (summary, history; `max` on 25 years x 50
- * positions costs about 0.6 s of CPU): at most `maxConcurrent` in flight, and a token bucket of
- * `ratePerMinute`. Keyed by the authenticated USER id (never by space or IP), so one user cannot
+ * positions costs about 0.6 s of CPU): at most `maxConcurrent` in flight PER PROCEDURE (a period
+ * change fires one summary and one history, which must both fit), and one token bucket of
+ * `ratePerMinute` shared by the user's procedures. Keyed by the authenticated USER id (never by space or IP), so one user cannot
  * slow another, whatever the spaces they share. The decision is synchronous (no await between the
  * check and the reservation), so concurrent requests cannot all slip under the cap. In-memory,
  * single instance (D13): reset on restart, like the auth limiters. No response is cached here.
@@ -38,10 +40,11 @@ export class DashboardLimiter {
     this.now = options.now ?? Date.now;
   }
 
-  acquire(userId: string): Admission {
+  acquire(userId: string, procedure: string): Admission {
     const now = this.now();
     const entry = this.entryFor(userId, now);
-    if (entry.inFlight >= this.options.maxConcurrent) {
+    const running = entry.inFlight.get(procedure) ?? 0;
+    if (running >= this.options.maxConcurrent) {
       // A request is running: it is expected to finish within about a second.
       return { allowed: false, retryAfterMs: 1_000 };
     }
@@ -50,14 +53,16 @@ export class DashboardLimiter {
       return { allowed: false, retryAfterMs: Math.ceil((1 - entry.tokens) / perMs) };
     }
     entry.tokens -= 1;
-    entry.inFlight += 1;
+    entry.inFlight.set(procedure, running + 1);
     let released = false;
     return {
       allowed: true,
       release: () => {
         if (released) return;
         released = true;
-        entry.inFlight -= 1;
+        const left = (entry.inFlight.get(procedure) ?? 1) - 1;
+        if (left <= 0) entry.inFlight.delete(procedure);
+        else entry.inFlight.set(procedure, left);
       },
     };
   }
@@ -67,7 +72,7 @@ export class DashboardLimiter {
     let entry = this.entries.get(userId);
     if (entry === undefined) {
       if (this.entries.size >= this.maxKeys) this.evict(now);
-      entry = { tokens: capacity, updatedAt: now, inFlight: 0 };
+      entry = { tokens: capacity, updatedAt: now, inFlight: new Map() };
       this.entries.set(userId, entry);
       return entry;
     }
@@ -81,7 +86,7 @@ export class DashboardLimiter {
     const capacity = this.options.ratePerMinute;
     for (const [key, entry] of this.entries) {
       const tokens = entry.tokens + ((now - entry.updatedAt) * capacity) / 60_000;
-      if (entry.inFlight === 0 && tokens >= capacity) this.entries.delete(key);
+      if (entry.inFlight.size === 0 && tokens >= capacity) this.entries.delete(key);
     }
   }
 }

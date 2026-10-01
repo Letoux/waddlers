@@ -38,7 +38,8 @@ const pctSigned = new Intl.NumberFormat('fr-FR', {
   minimumFractionDigits: 1,
   signDisplay: 'exceptZero',
 });
-const rate = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+// 5 significant digits whatever the magnitude: USD 0,88070 -> "0,8807", JPY 0,0058412, KRW 0,00067.
+const rate = new Intl.NumberFormat('fr-FR', { maximumSignificantDigits: 5 });
 
 /** "128 450 €". */
 export function formatEur(amount: string | null | undefined): string {
@@ -73,6 +74,17 @@ export function formatSignedPct(value: string | null | undefined): string {
 export function signOf(value: string | null | undefined): -1 | 0 | 1 | null {
   const n = toNumber(value);
   return n === null ? null : n > 0 ? 1 : n < 0 ? -1 : 0;
+}
+
+/**
+ * Sign of a figure AS DISPLAYED: derived from the formatted text, so a value that rounds to zero
+ * ("+0,4 €" shown as "0 €", "0,04 %" shown as "0,0 %") is neutral (no colour, no arrow) rather
+ * than a green "0 €". `null` when unavailable.
+ */
+export function displayedSign(raw: string | null | undefined, text: string): -1 | 0 | 1 | null {
+  const sign = signOf(raw);
+  if (sign === null || text === UNAVAILABLE) return null;
+  return /[1-9]/.test(text) ? sign : 0;
 }
 
 const PLAIN_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -140,7 +152,7 @@ export type FxLine = { text: string; note: string | null };
 const MINOR_UNITS = new Set(['GBX', 'ZAC', 'ILA']);
 
 /**
- * Specs 34 direction: "USD/EUR : 0,8807 (taux du 29/09/2026)" from `eurPerUnit`. The pence note
+ * Specs 34 direction: "USD/EUR : 0,8807 (taux du 29/09/2026)" from `eurPerUnit` (5 significant digits). The pence note
  * is shown only when a position is really quoted in a minor unit (`quotedCurrencies`).
  */
 export function fxRateLine(r: AppliedFxRate): FxLine {

@@ -15,6 +15,7 @@ import {
 } from '@/lib/dashboard/format';
 import { joinNames } from '@/lib/dashboard/labels';
 import { useHistory } from '@/lib/dashboard/queries';
+import { LeadingNotice } from './leading-notice';
 import { BlockError, BlockSkeleton, StaleBadge } from './block-states';
 
 const ValuePlot = dynamic(() => import('./value-plot'), {
@@ -45,15 +46,21 @@ function FxModeToggle({ value, onChange }: { value: FxMode; onChange: (m: FxMode
   );
 }
 
-function Notices({ history }: { history: DashboardHistoryOutput }) {
+function Notices({
+  history,
+  period,
+}: {
+  history: DashboardHistoryOutput;
+  period: DashboardPeriod;
+}) {
   const empty = history.points.every((p) => p.value === null);
   return (
     <ul className="grid gap-1 text-sm text-muted-foreground" data-testid="chart-notices">
-      {history.leadingMissing.length > 0 && (
-        <li>
-          Pas de donnée avant la création de {joinNames(history.leadingMissing.map((p) => p.name))}.
-        </li>
-      )}
+      <LeadingNotice
+        names={history.leadingMissing.map((p) => p.name)}
+        baseDate={history.headline?.baseDate ?? null}
+        period={period}
+      />
       {history.invalidPositions.length > 0 && (
         <li>
           Quantité invalide, position ignorée :{' '}
@@ -124,7 +131,10 @@ export function HistoryChart({ spaceId, period }: { spaceId: string; period: Das
           </p>
         )}
       </CardHeader>
-      <CardContent className="grid grid-cols-1 gap-3" aria-busy={query.isPending}>
+      <CardContent
+        className="grid grid-cols-1 gap-3"
+        aria-busy={query.isPending || query.isPlaceholderData}
+      >
         {query.isPending ? (
           <BlockSkeleton lines={4} label="Chargement du graphique" />
         ) : !history ? (
@@ -141,7 +151,7 @@ export function HistoryChart({ spaceId, period }: { spaceId: string; period: Das
               </div>
             )}
             <A11yTable history={history} />
-            <Notices history={history} />
+            <Notices history={history} period={period} />
             {currentRates.length > 0 && (
               <p className="text-sm text-muted-foreground" data-testid="current-fx">
                 {currentRates

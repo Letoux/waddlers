@@ -11,6 +11,7 @@ import {
   formatSignedEur,
   formatSignedPct,
   fxRateLine,
+  displayedSign,
   signOf,
 } from './format';
 
@@ -100,5 +101,39 @@ describe('dashboard formatting (fr-FR)', () => {
     });
     expect(gbp.note).toBeNull();
     expect(fxRateLine({ ...usdRate, quotedCurrencies: [] }).note).toBeNull();
+  });
+});
+
+describe('displayedSign (sign of the rounded display value)', () => {
+  const cases: [string, string, -1 | 0 | 1][] = [
+    ['0.4', 'eur', 0], // "0 €"
+    ['-0.4', 'eur', 0],
+    ['0.6', 'eur', 1], // "+1 €"
+    ['-0.6', 'eur', -1],
+    ['0.04', 'pct', 0], // "0,0 %"
+    ['-0.04', 'pct', 0],
+    ['0.06', 'pct', 1], // "+0,1 %"
+    ['0', 'eur', 0],
+  ];
+  it.each(cases)('%s (%s) -> %s', (raw, kind, expected) => {
+    const text = kind === 'eur' ? formatSignedEur(raw) : formatSignedPct(raw);
+    expect(displayedSign(raw, text)).toBe(expected);
+    if (expected === 0) expect(text).not.toMatch(/[+\-\u2212]/); // no sign printed on a zero
+  });
+
+  it('is null for unavailable values', () => {
+    expect(displayedSign(null, formatSignedEur(null))).toBeNull();
+    expect(displayedSign('abc', formatSignedPct('abc'))).toBeNull();
+  });
+});
+
+describe('fx rate with 5 significant digits', () => {
+  const line = (eurPerUnit: string) => norm(fxRateLine({ ...usdRate, eurPerUnit }).text);
+  it('keeps small rates readable (JPY, KRW) and does not pad large ones', () => {
+    expect(line('0.88070123')).toContain('USD/EUR : 0,8807 (');
+    expect(line('0.0058412345')).toContain(': 0,0058412 (');
+    expect(line('0.00067321')).toContain(': 0,00067321 (');
+    expect(line('1.25')).toContain(': 1,25 (');
+    expect(line('1.123456')).toContain(': 1,1235 (');
   });
 });

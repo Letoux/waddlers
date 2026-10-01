@@ -83,6 +83,8 @@ export type DashboardHeadline = z.infer<typeof dashboardHeadlineSchema>;
 export const dashboardFreshnessSchema = z.object({
   /** Oldest end-price date among the valued positions; `null` when nothing is valued. (Formerly `asOf`.) */
   oldestPriceDate: plainDate.nullable(),
+  /** Newest end-price date among the valued positions; `null` when nothing is valued. */
+  newestPriceDate: plainDate.nullable(),
   /** Oldest FX rate date used; `null` when no conversion was needed. */
   fxAsOf: plainDate.nullable(),
   /** True when any input is older than the stale threshold (see BACKEND.md). Never "realtime". */
@@ -189,7 +191,7 @@ export const dashboardHistoryOutputSchema = z.object({
   invalidPositions: z.array(invalidPositionSchema),
   /** Exchange-local date of the newest end price, the nominal end of the series (D23); null when there is no data. (Formerly `asOf`.) */
   seriesEnd: plainDate.nullable(),
-  /** True when `seriesEnd` is older than 5 days or an FX rate applied at the end is older than 7 days, versus the current UTC date. Never "realtime". */
+  /** True when the OLDEST held end-price date is older than 5 days (as in `summary.freshness`) or an FX rate applied at the end is older than 7 days, versus the current UTC date. Never "realtime". */
   isStale: z.boolean(),
 });
 export type DashboardHistoryOutput = z.infer<typeof dashboardHistoryOutputSchema>;

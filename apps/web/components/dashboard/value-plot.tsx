@@ -1,7 +1,7 @@
 'use client';
 
 import type { AppliedFxRate } from '@waddlers/contracts';
-import { Area, AreaChart, CartesianGrid, Tooltip, XAxis, YAxis } from 'recharts';
+import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts';
 import { ResponsiveContainer } from 'recharts';
 import { formatAxisDate, formatEurCompact } from '@/lib/dashboard/format';
 import { spanDays, type ChartDatum } from '@/lib/dashboard/chart-model';
@@ -9,7 +9,9 @@ import { ChartTooltip } from './chart-tooltip';
 
 /**
  * The plot only (loaded lazily by `HistoryChart` to keep Recharts out of the initial bundle).
- * One series, one hue from the `--chart-line` token (light and dark). A gap day is a real gap
+ * One series, one hue from the `--chart-line` token (light and dark). Straight segments between
+ * points and no area fill: the points are end-of-day closes, so neither a smoothed curve nor a
+ * filled area (which implies a baseline and a continuous path) would be honest. A gap day is a real gap
  * (`connectNulls={false}`). The plot is decorative for assistive technology (`aria-hidden` on the
  * wrapper in the parent): the text summary and table carry the information.
  */
@@ -23,7 +25,7 @@ export default function ValuePlot({
   const span = spanDays(data);
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <AreaChart
+      <LineChart
         data={data}
         margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
         accessibilityLayer={false}
@@ -51,19 +53,17 @@ export default function ValuePlot({
           cursor={{ stroke: 'var(--muted-foreground)', strokeDasharray: '3 3' }}
           isAnimationActive={false}
         />
-        <Area
-          type="monotone"
+        <Line
+          type="linear"
           dataKey="value"
           stroke="var(--chart-line)"
           strokeWidth={2}
-          fill="var(--chart-line)"
-          fillOpacity={0.12}
           connectNulls={false}
           dot={false}
           activeDot={{ r: 5, stroke: 'var(--card)', strokeWidth: 2, fill: 'var(--chart-line)' }}
           isAnimationActive={false}
         />
-      </AreaChart>
+      </LineChart>
     </ResponsiveContainer>
   );
 }

@@ -90,6 +90,19 @@ export interface RouterDeps {
   authenticate?: (context: RpcContext) => Promise<ResolvedSession | null>;
 }
 
+/**
+ * ONE limiter per process, shared by the HTTP RPC router and the in-process server client (SSR),
+ * so the per-user cap cannot be doubled by using both paths. Parked on `globalThis` because Next
+ * can bundle the route handler and the server components as separate module graphs, each with
+ * its own copy of this module. Tests inject their own.
+ */
+const LIMITER_KEY = Symbol.for('waddlers.dashboardLimiter');
+const sharedDashboardLimiter = ((globalThis as Record<symbol, unknown>)[LIMITER_KEY] ??=
+  new DashboardLimiter({
+    maxConcurrent: DASHBOARD_MAX_CONCURRENT,
+    ratePerMinute: DASHBOARD_RATE_PER_MINUTE,
+  })) as DashboardLimiter;
+
 export function createRouter({
   checkDb = checkDatabase,
   now = () => new Date(),
@@ -97,10 +110,7 @@ export function createRouter({
   getDb: getDatabase = getDb,
   loginLimiter = new LoginRateLimiter(),
   passwordLimiter = new LoginRateLimiter(),
-  dashboardLimiter = new DashboardLimiter({
-    maxConcurrent: DASHBOARD_MAX_CONCURRENT,
-    ratePerMinute: DASHBOARD_RATE_PER_MINUTE,
-  }),
+  dashboardLimiter = sharedDashboardLimiter,
   clientIp = (headers) => clientIpFrom(headers, getEnv().TRUSTED_PROXY_HEADER),
   authSecret = () => getEnv().AUTH_SECRET,
   authenticate: resolveAuth,
@@ -158,11 +168,12 @@ export function createRouter({
    */
   const admitted = async <T>(
     userId: string,
+    procedure: 'summary' | 'history',
     ctx: RpcContext,
     errors: { TOO_MANY_REQUESTS: (options: { data: { retryAfterSeconds: number } }) => Error },
     run: () => Promise<T>,
   ): Promise<T> => {
-    const admission = dashboardLimiter.acquire(userId);
+    const admission = dashboardLimiter.acquire(userId, procedure);
     if (!admission.allowed) {
       const seconds = retryAfterSeconds(admission.retryAfterMs);
       ctx.resHeaders?.set('retry-after', String(seconds));
@@ -223,12 +234,12 @@ export function createRouter({
     },
     dashboard: {
       summary: spaceScoped('viewer').dashboard.summary.handler(({ context, input, errors }) =>
-        admitted(context.session.user.id, context, errors, () =>
+        admitted(context.session.user.id, 'summary', context, errors, () =>
           getSummary(deps.getDb(), context.space, input.period, dashboardDeps),
         ),
       ),
       history: spaceScoped('viewer').dashboard.history.handler(({ context, input, errors }) =>
-        admitted(context.session.user.id, context, errors, () =>
+        admitted(context.session.user.id, 'history', context, errors, () =>
           getHistory(deps.getDb(), context.space, input.period, input.fxMode, dashboardDeps),
         ),
       ),

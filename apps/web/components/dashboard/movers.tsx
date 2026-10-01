@@ -72,7 +72,7 @@ export function Movers({ spaceId, period }: { spaceId: string; period: Dashboard
           <h2>Évolutions sur la période</h2>
         </CardTitle>
       </CardHeader>
-      <CardContent aria-busy={query.isPending}>
+      <CardContent aria-busy={query.isPending || query.isPlaceholderData}>
         {query.isPending ? (
           <BlockSkeleton lines={5} label="Chargement des évolutions" />
         ) : !data ? (

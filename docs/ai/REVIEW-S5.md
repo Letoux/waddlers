@@ -24,6 +24,39 @@ Independent code review and security audit of commit 0f1be82 (S5 dashboard backe
 | Security F2 | P3 | IDOR matrix asserted only the status of an ok answer | **Fixed.** Every `positionId` of an ok dashboard answer belongs to the target space; space B holds a distinct instrument with metrics (MSFT) and neither its ids nor its name appear in space A's summary/history/movers (and A's not in B's), totals per space asserted (1240 vs 1400); garbage `period: 'bogus'`: non-member and member of another space `NOT_FOUND`, viewer `BAD_REQUEST`. |
 | Security F3 | P3 | `getMovers` read outside the read-only transaction the doc describes | **Fixed.** `getMovers` uses the same read-only REPEATABLE READ transaction style (one statement, same snapshot discipline); BACKEND.md says so. |
 
+## Re-review, frontend review and frontend audit
+
+### Backend re-review
+
+| Ref | Sev | Finding | Status |
+| --- | --- | --- | --- |
+| F1-F8 | P2/P3 | Findings of the first review and audit | **Fixed** (re-review confirms). |
+| P3-A | P3 | `history.isStale` derived from `seriesEnd` (the NEWEST end price), inconsistent with `summary.freshness.isStale` | **Fixed.** Derived from the oldest held end-price date; test with one fresh and one old position (and a watchlist entry ignored). |
+| P3-B | P3 | Per-point `fxRates` payload in historical mode grows linearly with the number of currencies held (bounded by 400 points; about 45 KB per currency) | **Accepted** for the MVP; revisit (per-response rate table referenced by date) if spaces commonly hold 8+ currencies. |
+
+### Security re-audit (approve)
+
+| Ref | Sev | Finding | Status |
+| --- | --- | --- | --- |
+| Limiter instance | P3 | The HTTP RPC router and `createServerClient` built separate `DashboardLimiter` instances (cap doubled across the two paths) | **Fixed.** One shared instance per process (module level, parked on `globalThis` against split Next bundles). |
+| Honest-user cap | P3 | The per-user in-flight cap of 2 refused a normal user (a period change fires summary + history) | **Fixed.** In-flight cap per (user, procedure); token bucket per user kept (30/min); limiter tests updated. |
+
+### Frontend review
+
+| Ref | Sev | Finding | Status |
+| --- | --- | --- | --- |
+| FE-P2-1 | P2 | False 429 during normal use: summary + history filled the per-user cap, aborted requests kept computing server-side, the client never retried a 429 | **Fixed.** Cap per procedure; dashboard queries retry `TOO_MANY_REQUESTS` twice after `retryAfterSeconds` (0.5-3 s); previous data kept while loading (same space only). Unit tests (retry policy, limiter) and E2E (quick period/FX changes on `max`, single and persistent forced 429). |
+| FE-P3-1 | P3 | Monotone curve with area fill suggested an intraday path and a zero baseline | **Fixed.** Linear line, no fill, `connectNulls={false}`; rationale in FRONTEND.md. |
+| FE-P3-2 | P3 | Sign/colour/arrow from the unrounded value (a green "0 EUR") | **Fixed.** Derived from the displayed text; zero is neutral. Tests: +0.4 EUR, -0.4 EUR, 0.04 %, 0. |
+| FE-P3-3 | P3 | `delta-end.ts` dead under D23; freshness wording | **Fixed.** File removed; `freshness.newestPriceDate` added (additive, tested); "Cours du X au Y" / "Cours au X"; docs corrected. |
+| FE-P3-4 | P3 | FX tooltip rate with 4 fixed decimals (JPY/KRW unreadable) | **Fixed.** 5 significant digits; tests for USD, JPY, KRW. |
+| FE-P3-5 | P3 | D20 notice listed every name and said "création" | **Fixed.** Long form for more than 3 names or `max`, names in a disclosure; wording "début de l'historique disponible". Tests. |
+| FE-P3-6 | P3 | E2E gaps | **Fixed.** Error state (forced 500), stale badge, on-screen D23 invariant, GBP-only tooltip without pence note (the last two altered answers with `page.route`; the fake data is shared). |
+
+### Frontend audit (approve)
+
+No findings.
+
 ## Deferred / remaining risks
 
 - **Row-level security (RLS) is deferred.** Isolation rests on the branded `AuthorizedSpace` (access resolved before validation) and on repositories reaching listings only through `space_positions`; there is no database-enforced backstop yet. To revisit with the deployment work (role split, see REVIEW-S4 audit P3-7).

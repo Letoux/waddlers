@@ -1,10 +1,11 @@
 import { TrendingDown, TrendingUp } from 'lucide-react';
-import { signOf } from '@/lib/dashboard/format';
+import { displayedSign } from '@/lib/dashboard/format';
 import { cn } from '@/lib/utils';
 
 /**
  * A signed figure that never relies on colour alone: the text carries the sign (+ / -) and an
- * icon carries the direction. Unavailable values (`text` is "—") are neutral.
+ * icon carries the direction. Unavailable values (`text` is "—") and values that round to zero are neutral: the sign
+ * is derived from the displayed text, never from the unrounded value.
  */
 export function ChangeFigure({
   raw,
@@ -17,7 +18,7 @@ export function ChangeFigure({
   className?: string;
   testId?: string;
 }) {
-  const sign = signOf(raw);
+  const sign = displayedSign(raw, text);
   const Icon = sign === 1 ? TrendingUp : sign === -1 ? TrendingDown : null;
   return (
     <span

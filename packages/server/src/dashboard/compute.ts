@@ -223,6 +223,7 @@ export function computeCurrentValue(
   const fxUsed = [...usedFx].sort().flatMap((c) => latestFx.get(c) ?? []);
   const oldest = (dates: PlainDate[]) =>
     dates.length === 0 ? null : dates.reduce((a, b) => (compareDates(a, b) <= 0 ? a : b));
+  const newest = (dates: PlainDate[]) => dates.reduce((a, b) => (compareDates(a, b) >= 0 ? a : b));
   const staleFx = fxUsed
     .filter((r) => isOld(r.date, fxToleranceDays))
     .map((r) => ({ currency: r.currency, date: r.date }));
@@ -240,6 +241,7 @@ export function computeCurrentValue(
     watchlistCount: positions.filter((p) => !held(p)).length,
     freshness: {
       oldestPriceDate: oldest(priceDates),
+      newestPriceDate: priceDates.length === 0 ? null : newest(priceDates),
       fxAsOf: oldest(fxUsed.map((r) => r.date)),
       isStale: stalePositions.length > 0 || staleFx.length > 0,
       stalePositions,
@@ -451,6 +453,9 @@ export function historyToWire(
   const today = utcToday(now);
   const isOld = (date: PlainDate, days: number) => diffDays(date, today) > days;
   const quoted = quotedCurrencies(positions);
+  const heldPriceDates = positions.flatMap((p) =>
+    held(p) && p.metrics?.asOfDate ? [p.metrics.asOfDate] : [],
+  );
   // `current` mode: one rate per currency, with its REAL date; the points carry no rates.
   const currentFxRates =
     fxMode === 'current'
@@ -497,8 +502,10 @@ export function historyToWire(
       reason: x.reason,
     })),
     seriesEnd,
+    // Same rule as `summary.freshness.isStale`: the OLDEST held end price counts, not the series end
+    // (the newest one), so one old position is flagged even when another quotes today.
     isStale:
-      (seriesEnd !== null && isOld(seriesEnd, STALE_AFTER_DAYS)) || endRates.some((r) => r.isStale),
+      heldPriceDates.some((d) => isOld(d, STALE_AFTER_DAYS)) || endRates.some((r) => r.isStale),
   };
 }
 

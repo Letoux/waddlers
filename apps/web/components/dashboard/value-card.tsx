@@ -12,9 +12,9 @@ import {
   formatSignedPct,
   UNAVAILABLE,
 } from '@/lib/dashboard/format';
-import { deltaEndNote } from '@/lib/dashboard/delta-end';
 import { joinNames, missingReasonLabel } from '@/lib/dashboard/labels';
 import { useSummary } from '@/lib/dashboard/queries';
+import { LeadingNotice } from './leading-notice';
 import { BlockError, BlockSkeleton, StaleBadge } from './block-states';
 import { ChangeFigure } from './change-figure';
 
@@ -41,6 +41,14 @@ function PartialWarning({ missing }: { missing: DashboardSummaryOutput['missing'
   );
 }
 
+/** "Cours du <oldest> au <newest>" when the positions' prices differ in date, else "Cours au <date>". */
+function priceDatesText({ oldestPriceDate, newestPriceDate }: DashboardSummaryOutput['freshness']) {
+  if (!oldestPriceDate) return `Cours : ${UNAVAILABLE}`;
+  if (!newestPriceDate || newestPriceDate === oldestPriceDate)
+    return `Cours au ${formatLongDate(oldestPriceDate)}`;
+  return `Cours du ${formatLongDate(oldestPriceDate)} au ${formatLongDate(newestPriceDate)}`;
+}
+
 function Freshness({ freshness }: { freshness: DashboardSummaryOutput['freshness'] }) {
   const details = [
     ...freshness.stalePositions.map((p) => `${p.name} (cours du ${formatNumericDate(p.asOf)})`),
@@ -49,12 +57,7 @@ function Freshness({ freshness }: { freshness: DashboardSummaryOutput['freshness
   return (
     <div className="grid gap-1 text-sm text-muted-foreground" data-testid="freshness">
       <p className="flex flex-wrap items-center gap-2">
-        <span>
-          Données au{' '}
-          <span data-testid="as-of">
-            {freshness.oldestPriceDate ? formatLongDate(freshness.oldestPriceDate) : UNAVAILABLE}
-          </span>
-        </span>
+        <span data-testid="as-of">{priceDatesText(freshness)}</span>
         {freshness.isStale && <StaleBadge testId="stale-badge" />}
       </p>
       {freshness.isStale && details.length > 0 && <p>Données anciennes : {details.join(', ')}.</p>}
@@ -62,15 +65,21 @@ function Freshness({ freshness }: { freshness: DashboardSummaryOutput['freshness
   );
 }
 
-function Notices({ summary }: { summary: DashboardSummaryOutput }) {
+function Notices({
+  summary,
+  period,
+}: {
+  summary: DashboardSummaryOutput;
+  period: DashboardPeriod;
+}) {
   if (summary.leadingMissing.length === 0 && summary.invalidPositions.length === 0) return null;
   return (
     <ul className="grid gap-1 text-sm text-muted-foreground" data-testid="value-notices">
-      {summary.leadingMissing.length > 0 && (
-        <li>
-          Pas de donnée avant la création de {joinNames(summary.leadingMissing.map((p) => p.name))}.
-        </li>
-      )}
+      <LeadingNotice
+        names={summary.leadingMissing.map((p) => p.name)}
+        baseDate={summary.change?.baseDate ?? null}
+        period={period}
+      />
       {summary.invalidPositions.length > 0 && (
         <li>
           Quantité invalide, position ignorée :{' '}
@@ -83,8 +92,8 @@ function Notices({ summary }: { summary: DashboardSummaryOutput }) {
 
 function Delta({ summary }: { summary: DashboardSummaryOutput }) {
   const { change } = summary;
-  // Card delta is always historical FX (D23), whatever the chart's FX mode.
-  const endsAt = deltaEndNote(change, summary.freshness.oldestPriceDate);
+  // Card delta is always historical FX (D23), whatever the chart's FX mode. Its end is the total
+  // (D23 invariant: total - change = start), so there is no separate "au <date>" end label.
   if (!change) {
     // D23: a partial total has no delta (it would describe another set of positions).
     const why = summary.isComplete
@@ -112,12 +121,6 @@ function Delta({ summary }: { summary: DashboardSummaryOutput }) {
       />
       <span className="text-sm text-muted-foreground">
         depuis le <span data-testid="base-date">{formatLongDate(change.baseDate)}</span>
-        {endsAt && (
-          <>
-            {' '}
-            <span data-testid="delta-end">au {formatLongDate(endsAt)}</span>
-          </>
-        )}
       </span>
     </div>
   );
@@ -133,7 +136,10 @@ export function ValueCard({ spaceId, period }: { spaceId: string; period: Dashbo
           <h2>Valeur suivie</h2>
         </CardTitle>
       </CardHeader>
-      <CardContent className="grid grid-cols-1 gap-3" aria-busy={query.isPending}>
+      <CardContent
+        className="grid grid-cols-1 gap-3"
+        aria-busy={query.isPending || query.isPlaceholderData}
+      >
         {query.isPending ? (
           <BlockSkeleton lines={2} label="Chargement de la valeur suivie" />
         ) : !summary ? (
@@ -154,7 +160,7 @@ export function ValueCard({ spaceId, period }: { spaceId: string; period: Dashbo
             {!summary.isComplete && summary.missing.length > 0 && (
               <PartialWarning missing={summary.missing} />
             )}
-            <Notices summary={summary} />
+            <Notices summary={summary} period={period} />
             <Freshness freshness={summary.freshness} />
           </>
         )}

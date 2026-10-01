@@ -261,6 +261,36 @@ describe('history wire (D22/D23)', () => {
     expect(historyToWire([p], hist, '1m', '2026-09-22', 'historical', NOW, 7).isStale).toBe(true);
   });
 
+  it('isStale follows the OLDEST held end price (as the summary), not the series end; a watchlist entry is ignored', () => {
+    const fresh = pos('a', '10', 'EUR', '100', '2026-09-30');
+    const old = pos('b', '10', 'EUR', '100', '2026-09-20');
+    const watch = pos('w', null, 'EUR', '100', '2026-09-01');
+    const rows = [...closes('a', [['2026-09-29', '99']]), ...closes('b', [['2026-09-19', '99']])];
+    const run = (ps: SpacePositionData[]) =>
+      historyToWire(
+        ps,
+        computeHistory(ps, rows, [], '1m', '2026-09-30', HIST),
+        '1m',
+        '2026-09-30',
+        'historical',
+        NOW,
+        7,
+      ).isStale;
+    expect(run([fresh, old])).toBe(true);
+    expect(run([fresh, watch])).toBe(false);
+    expect(computeCurrentValue([fresh, old], [], NOW, 7).freshness.isStale).toBe(true);
+  });
+
+  it('summary freshness carries the oldest and newest price date', () => {
+    const f = computeCurrentValue(
+      [pos('a', '10', 'EUR', '100', '2026-09-30'), pos('b', '10', 'EUR', '100', '2026-09-20')],
+      [],
+      NOW,
+      7,
+    ).freshness;
+    expect([f.oldestPriceDate, f.newestPriceDate]).toEqual(['2026-09-20', '2026-09-30']);
+  });
+
   it('an empty space: no series end, not stale', () => {
     const out = historyToWire([], null, '1m', null, 'historical', NOW, 7);
     expect(out).toMatchObject({ seriesEnd: null, isStale: false, points: [] });

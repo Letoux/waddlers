@@ -40,7 +40,12 @@ describe('dashboard in-flight cap (2 per user)', () => {
     const { dashboardLimiter, rpc, loginAs } = make();
     const cookie = await loginAs('alice');
     // Two requests of alice are "running": hold their slots.
-    const held = [dashboardLimiter.acquire(aliceId), dashboardLimiter.acquire(aliceId)];
+    const held = [
+      dashboardLimiter.acquire(aliceId, 'summary'),
+      dashboardLimiter.acquire(aliceId, 'summary'),
+    ];
+    dashboardLimiter.acquire(aliceId, 'history');
+    dashboardLimiter.acquire(aliceId, 'history');
     for (const [proc, input] of [
       ['dashboard.summary', { spaceId: aliceSpace, period: '1m' }],
       ['dashboard.history', { spaceId: aliceSpace, period: '1m' }],
@@ -62,6 +67,16 @@ describe('dashboard in-flight cap (2 per user)', () => {
     ).toBe(200);
   });
 
+  it('a busy summary does not refuse a history of the same user (one period change fires both)', async () => {
+    const { dashboardLimiter, rpc, loginAs } = make();
+    const cookie = await loginAs('alice');
+    dashboardLimiter.acquire(aliceId, 'summary');
+    dashboardLimiter.acquire(aliceId, 'summary');
+    expect(
+      (await rpc('dashboard.history', { spaceId: aliceSpace, period: '1m' }, { cookie })).status,
+    ).toBe(200);
+  });
+
   it('a failing call still releases its slot (no leak on error)', async () => {
     const { rpc, loginAs } = make({ maxConcurrent: 1 });
     const cookie = await loginAs('alice');
@@ -77,8 +92,8 @@ describe('dashboard in-flight cap (2 per user)', () => {
     const { dashboardLimiter, rpc, loginAs } = make();
     const alice = await loginAs('alice');
     const bob = await loginAs('bob');
-    dashboardLimiter.acquire(aliceId);
-    dashboardLimiter.acquire(aliceId);
+    dashboardLimiter.acquire(aliceId, 'summary');
+    dashboardLimiter.acquire(aliceId, 'summary');
     expect(
       (await rpc('dashboard.summary', { spaceId: aliceSpace, period: '1m' }, { cookie: alice }))
         .status,
@@ -95,8 +110,8 @@ describe('dashboard in-flight cap (2 per user)', () => {
   it('the check runs after the space access check: an inaccessible space is NOT_FOUND, not 429', async () => {
     const { dashboardLimiter, rpc, loginAs } = make();
     const cookie = await loginAs('alice');
-    dashboardLimiter.acquire(aliceId);
-    dashboardLimiter.acquire(aliceId);
+    dashboardLimiter.acquire(aliceId, 'summary');
+    dashboardLimiter.acquire(aliceId, 'summary');
     const res = await rpc('dashboard.summary', { spaceId: bobSpace, period: '1m' }, { cookie });
     expect(res.json.code).toBe('NOT_FOUND');
   });

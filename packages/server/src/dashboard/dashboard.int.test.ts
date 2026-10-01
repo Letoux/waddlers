@@ -150,6 +150,7 @@ describe('dashboard.summary', () => {
     expect(s.change).toEqual(h.headline);
     expect(s.freshness).toMatchObject({
       oldestPriceDate: '2026-09-30',
+      newestPriceDate: '2026-09-30',
       isStale: false,
       stalePositions: [],
     });
@@ -206,6 +207,7 @@ describe('dashboard.summary', () => {
     const s = await summary(spaceId, '1w');
     expect(s.total.amount).toBe('104');
     expect(s.freshness.oldestPriceDate).toBe('2026-09-20');
+    expect(s.freshness.newestPriceDate).toBe('2026-09-20');
     expect(s.freshness.isStale).toBe(true);
     expect(s.freshness.stalePositions).toEqual([
       expect.objectContaining({ name: 'Air Liquide', asOf: '2026-09-20' }),

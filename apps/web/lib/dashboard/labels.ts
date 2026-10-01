@@ -1,4 +1,5 @@
-import type { DashboardSummaryOutput } from '@waddlers/contracts';
+import type { DashboardPeriod, DashboardSummaryOutput } from '@waddlers/contracts';
+import { formatLongDate } from './format';
 
 type MissingReason = DashboardSummaryOutput['missing'][number]['reason'];
 
@@ -36,4 +37,34 @@ export function rateLimitedMessage(error: unknown): string {
   return s === null
     ? 'Trop de requêtes en peu de temps. Réessayez dans quelques secondes.'
     : `Trop de requêtes en peu de temps. Réessayez dans ${s} seconde${s > 1 ? 's' : ''}.`;
+}
+
+export type LeadingNotice =
+  { kind: 'short'; text: string } | { kind: 'long'; text: string; names: string[] };
+
+/**
+ * D20 notice (positions whose stored history starts after the period start, so the series starts
+ * later). It is stored price history, not the listing's creation date: never say "création".
+ * Long form (more than 3 names, or `max`, where it is expected): the date from which the whole
+ * set has history, the count, and the names left to a disclosure. `baseDate` = the headline's.
+ */
+export function leadingMissingNotice(
+  names: string[],
+  baseDate: string | null,
+  period: DashboardPeriod,
+): LeadingNotice | null {
+  if (names.length === 0) return null;
+  if (names.length <= 3 && period !== 'max') {
+    return {
+      kind: 'short',
+      text: `Pas de donnée avant le début de l’historique disponible de ${joinNames(names)}.`,
+    };
+  }
+  const since = baseDate ? ` depuis le ${formatLongDate(baseDate)}` : '';
+  const count = `${names.length} titre${names.length > 1 ? 's' : ''} sans historique plus ancien`;
+  return {
+    kind: 'long',
+    text: `Historique complet disponible${since} pour l’ensemble des positions — ${count}.`,
+    names,
+  };
 }
