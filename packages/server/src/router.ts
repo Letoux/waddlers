@@ -223,7 +223,7 @@ export function createRouter({
     },
     positions: {
       list: spaceScoped('viewer').positions.list.handler(({ context, input }) =>
-        listSpacePositions(deps.getDb(), context.space, input.page),
+        listSpacePositions(deps.getDb(), context.space, input, now),
       ),
       setQuantity: spaceScoped('editor').positions.setQuantity.handler(({ context, input }) =>
         setPositionQuantity(deps.getDb(), context.space, input.positionId, input.quantity),

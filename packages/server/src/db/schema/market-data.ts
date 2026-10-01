@@ -235,30 +235,11 @@ export const listingMetrics = pgTable(
     ...perfColumns(),
   },
   (table) => {
-    // Partial indexes on non-null values serve range filters and both sort directions of the
-    // available values; NULLs are appended by the query (NULLS LAST).
+    // No index on price_eur / perf_*: the table query (S6) is scoped by space first (the
+    // space_positions unique index), then sorts the space's rows; the seven partial indexes of
+    // 0004 were never chosen by the planner (EXPLAIN on 5 000 positions among 65 000 rows,
+    // docs/ai/BACKEND.md "Table (S6)") and only slowed every metrics upsert. Dropped in 0005.
     return [
-      index('listing_metrics_price_eur_idx')
-        .on(table.priceEur)
-        .where(sql`${table.priceEur} is not null`),
-      index('listing_metrics_perf_1w_idx')
-        .on(table.perf1w)
-        .where(sql`${table.perf1w} is not null`),
-      index('listing_metrics_perf_1m_idx')
-        .on(table.perf1m)
-        .where(sql`${table.perf1m} is not null`),
-      index('listing_metrics_perf_6m_idx')
-        .on(table.perf6m)
-        .where(sql`${table.perf6m} is not null`),
-      index('listing_metrics_perf_1y_idx')
-        .on(table.perf1y)
-        .where(sql`${table.perf1y} is not null`),
-      index('listing_metrics_perf_5y_idx')
-        .on(table.perf5y)
-        .where(sql`${table.perf5y} is not null`),
-      index('listing_metrics_perf_max_idx')
-        .on(table.perfMax)
-        .where(sql`${table.perfMax} is not null`),
       check(
         'listing_metrics_price_positive',
         sql`${table.price} is null or (${positive(table.price)})`,

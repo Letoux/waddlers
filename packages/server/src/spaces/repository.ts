@@ -1,17 +1,7 @@
 import { SPACE_WRITER_ROLES } from '@waddlers/contracts';
 import { and, asc, count, eq, exists, inArray, sql } from 'drizzle-orm';
 import type { DbExecutor } from '../db/create';
-import {
-  exchanges,
-  instruments,
-  listings,
-  spaceMembers,
-  spacePositions,
-  spaces,
-  users,
-  type InstrumentType,
-  type SpaceRole,
-} from '../db/schema';
+import { spaceMembers, spacePositions, spaces, users, type SpaceRole } from '../db/schema';
 import type { AuthorizedSpace } from './access';
 
 /**
@@ -94,61 +84,6 @@ export async function getLastSpaceId(db: DbExecutor, userId: string): Promise<st
 export async function setLastSpaceId(db: DbExecutor, space: AuthorizedSpace): Promise<void> {
   if (space.userId === null) throw new Error('setLastSpaceId requires a user-scoped space access');
   await db.update(users).set({ lastSpaceId: space.id }).where(eq(users.id, space.userId));
-}
-
-export interface PositionListRow {
-  id: string;
-  quantity: string | null;
-  selectionReason: string | null;
-  createdAt: Date;
-  instrumentId: string;
-  instrumentName: string;
-  instrumentType: InstrumentType;
-  isin: string | null;
-  listingId: string;
-  symbol: string;
-  currency: string;
-  exchangeMic: string;
-  exchangeName: string;
-}
-
-export async function listPositions(
-  db: DbExecutor,
-  space: AuthorizedSpace,
-  page: { offset: number; limit: number },
-): Promise<PositionListRow[]> {
-  return db
-    .select({
-      id: spacePositions.id,
-      quantity: spacePositions.quantity,
-      selectionReason: spacePositions.selectionReason,
-      createdAt: spacePositions.createdAt,
-      instrumentId: instruments.id,
-      instrumentName: instruments.name,
-      instrumentType: instruments.type,
-      isin: instruments.isin,
-      listingId: listings.id,
-      symbol: listings.symbol,
-      currency: listings.currency,
-      exchangeMic: exchanges.mic,
-      exchangeName: exchanges.name,
-    })
-    .from(spacePositions)
-    .innerJoin(instruments, eq(instruments.id, spacePositions.instrumentId))
-    .innerJoin(listings, eq(listings.id, spacePositions.listingId))
-    .innerJoin(exchanges, eq(exchanges.mic, listings.exchangeMic))
-    .where(eq(spacePositions.spaceId, space.id))
-    .orderBy(asc(sql`lower(${instruments.name})`), asc(spacePositions.id))
-    .limit(page.limit)
-    .offset(page.offset);
-}
-
-export async function countPositions(db: DbExecutor, space: AuthorizedSpace): Promise<number> {
-  const [row] = await db
-    .select({ n: sql<number>`count(*)::int` })
-    .from(spacePositions)
-    .where(eq(spacePositions.spaceId, space.id));
-  return row?.n ?? 0;
 }
 
 /**

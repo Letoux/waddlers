@@ -1,36 +1,32 @@
 import { ORPCError } from '@orpc/server';
 import {
+  DEFAULT_TABLE_COLUMNS,
   POSITIONS_LIST_MAX,
-  type PositionRow,
+  type DashboardPeriod,
   type PositionsListOutput,
+  type TablePositionRow as TablePositionRowOut,
+  type TableColumnId,
+  type TableSort,
   type SpaceSummary,
   type SpacesListOutput,
 } from '@waddlers/contracts';
 import { normalizeCurrency } from '@waddlers/domain';
 import type { Database, DbExecutor } from '../db/create';
 import type { AuthorizedSpace } from './access';
+import { canonicalQuantity } from './quantity';
 import {
-  countPositions,
   deletePosition,
   getLastSpaceId,
   getSpaceSummary,
-  listPositions,
   listSpacesForUser,
   setLastSpaceId,
   updatePositionQuantity,
-  type PositionListRow,
 } from './repository';
+import { buildValues } from './table-cells';
+import { queryTablePage, queryTableTotals, type TablePositionRow } from './table-query';
+import { utcToday } from '../dashboard/compute';
 
-/**
- * Canonical decimal string of a `numeric(24,8)` value: PostgreSQL pads the scale
- * (`12.50000000`); the API returns `12.5`. Pure string work, no float, no exponent.
- */
-export function canonicalQuantity(value: string | null): string | null {
-  if (value === null) return null;
-  if (!value.includes('.')) return value;
-  const trimmed = value.replace(/0+$/, '').replace(/\.$/, '');
-  return trimmed === '' ? '0' : trimmed;
-}
+export { canonicalQuantity };
 
 export async function listSpaces(db: DbExecutor, userId: string): Promise<SpacesListOutput> {
   const rows = await listSpacesForUser(db, userId);
@@ -54,50 +50,86 @@ export async function setActiveSpace(
   return { activeSpaceId: space.id };
 }
 
-export function toPositionRow(row: PositionListRow): PositionRow {
-  const normalized = normalizeCurrency(row.currency);
+function toTableRow(
+  row: TablePositionRow,
+  columns: readonly TableColumnId[],
+  period: DashboardPeriod,
+  today: string,
+): TablePositionRowOut {
+  const d = row.data;
+  const normalized = normalizeCurrency(d.currency);
   return {
     id: row.id,
-    quantity: canonicalQuantity(row.quantity),
-    selectionReason: row.selectionReason,
+    quantity: canonicalQuantity(d.quantity),
+    selectionReason: d.selectionReason,
     addedAt: row.createdAt.toISOString(),
     instrument: {
       id: row.instrumentId,
-      name: row.instrumentName,
-      type: row.instrumentType,
+      name: d.instrumentName,
+      type: d.instrumentType,
       isin: row.isin,
     },
     listing: {
       id: row.listingId,
-      symbol: row.symbol,
-      exchange: { mic: row.exchangeMic, name: row.exchangeName },
-      currency: row.currency,
+      symbol: d.symbol,
+      exchange: { mic: row.exchangeMic, name: d.exchangeName },
+      currency: d.currency,
       currencyMajor: normalized?.currency ?? null,
       minorUnitDivisor: normalized ? normalized.divisor.toNumber() : null,
     },
+    values: buildValues(d, columns, period, today),
   };
 }
 
+export interface PositionsTableParams {
+  page?: { offset?: number; limit?: number } | undefined;
+  period?: DashboardPeriod | undefined;
+  search?: string | undefined;
+  sort?: TableSort | undefined;
+  columns?: readonly TableColumnId[] | undefined;
+}
+
+export const DEFAULT_LIST_PERIOD: DashboardPeriod = '1m';
+
 /**
- * One page of positions. Rows and total are read in a single read-only REPEATABLE READ
+ * One page of the table. Rows and totals are read in a single read-only REPEATABLE READ
  * transaction so they describe the same snapshot (a concurrent add/remove cannot make `total`
- * and `hasMore` disagree with `rows`).
+ * and `hasMore` disagree with `rows`). PostgreSQL only: no provider, no cache. The cell mapping
+ * runs after the transaction committed.
  */
 export async function listSpacePositions(
   db: Database,
   space: AuthorizedSpace,
-  page?: { offset?: number; limit?: number },
+  params: PositionsTableParams = {},
+  now: () => Date = () => new Date(),
 ): Promise<PositionsListOutput> {
-  const offset = page?.offset ?? 0;
-  const limit = page?.limit ?? POSITIONS_LIST_MAX;
-  const { rows, total } = await db.transaction(
+  const offset = params.page?.offset ?? 0;
+  const limit = params.page?.limit ?? POSITIONS_LIST_MAX;
+  const period = params.period ?? DEFAULT_LIST_PERIOD;
+  const columns = params.columns ?? DEFAULT_TABLE_COLUMNS;
+  const search = params.search?.trim() || undefined;
+  const { rows, totals } = await db.transaction(
     async (tx) => ({
-      rows: await listPositions(tx, space, { offset, limit }),
-      total: await countPositions(tx, space),
+      rows: await queryTablePage(tx, space, {
+        offset,
+        limit,
+        search,
+        sort: params.sort,
+        period,
+        withDescription: columns.includes('description'),
+      }),
+      totals: await queryTableTotals(tx, space, search),
     }),
     { isolationLevel: 'repeatable read', accessMode: 'read only' },
   );
-  return { rows: rows.map(toPositionRow), total, hasMore: offset + rows.length < total };
+  const today = utcToday(now());
+  return {
+    rows: rows.map((r) => toTableRow(r, columns, period, today)),
+    total: totals.total,
+    hasMore: offset + rows.length < totals.total,
+    period,
+    asOf: totals.computedAt?.toISOString() ?? null,
+  };
 }
 
 export async function setPositionQuantity(

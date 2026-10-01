@@ -57,6 +57,8 @@ describe('useSetQuantity state machine (setQuantityMutationOptions)', () => {
       rows: [row(X, '1'), row(Y, '7')],
       total: 2,
       hasMore: false,
+      period: '1m',
+      asOf: null,
     });
     notify = { success: vi.fn<(m: string) => void>(), error: vi.fn<(m: string) => void>() };
     invalidate = vi.fn<() => void>();

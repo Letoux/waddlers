@@ -170,11 +170,11 @@ Spec: specs 2, 7, 9, 33, 35, 40. Decisions D7-D11, D17 and the S3 orchestrator d
 | `spaces.list()` | any user | `{ spaces: [{ id, name, referenceCurrency, role, positionCount }], activeSpaceId }`, only the caller's spaces, by name. `activeSpaceId` = last active space if still accessible, else the first by name, else `null` |
 | `spaces.get({ spaceId })` | viewer | one summary (same shape) |
 | `spaces.setActive({ spaceId })` | viewer | `{ activeSpaceId }`; stores `users.last_space_id` (idempotent) |
-| `positions.list({ spaceId, page?: { offset, limit } })` | viewer | `{ rows, total, hasMore }` |
+| `positions.list({ spaceId, page?, period?, search?, sort?, columns? })` | viewer | `{ rows, total, hasMore, period, asOf }` (S6 extends it: see "Table (S6)") |
 | `positions.setQuantity({ spaceId, positionId, quantity })` | editor | `{ positionId, quantity }`; idempotent; `quantity: null` = watchlist |
 | `positions.remove({ spaceId, positionId })` | editor | `{ ok: true }`; a second call is `NOT_FOUND` |
 
-`positions.list` rows: `{ id, quantity: string|null, selectionReason: string|null, addedAt, instrument: { id, name, type, isin }, listing: { id, symbol, exchange: { mic, name }, currency (raw, may be GBX), currencyMajor (GBP) | null, minorUnitDivisor (100) | null } }`. **No prices, values or performance** (S4/S6 add them; nothing is invented). Sorted by instrument name (case-insensitive) then id. Pagination: optional `page = { offset >= 0 (default 0), limit 1..POSITIONS_LIST_MAX (default 1000) }`; omitting `page` returns the first 1000 rows, as before. `total` = positions matching the query (today every position of the space), `hasMore = offset + rows.length < total`. Rows and total are read in one read-only REPEATABLE READ transaction, so they describe the same snapshot. Server sort, filter and search arrive in S6; an `asOf` (data freshness) field will be added to the output in S4/S6 with the market data. No provider call and no cache involved: this data is PostgreSQL only, so there is no TTL to document.
+`positions.list` rows: `{ id, quantity: string|null, selectionReason: string|null, addedAt, instrument: { id, name, type, isin }, listing: { id, symbol, exchange: { mic, name }, currency (raw, may be GBX), currencyMajor (GBP) | null, minorUnitDivisor (100) | null } }`. S6 adds `values` (prices, performance, tracked value; see "Table (S6)"; nothing is invented). Sorted by instrument name (case-insensitive) then id. Pagination: optional `page = { offset >= 0 (default 0), limit 1..POSITIONS_LIST_MAX (default and max 200; it was 1000 before S6) }`; omitting `page` returns the first page. `total` = positions matching the query (today every position of the space), `hasMore = offset + rows.length < total`. Rows and total are read in one read-only REPEATABLE READ transaction, so they describe the same snapshot. Server sort and search (S6) and `asOf` are described in "Table (S6)"; filters arrive in S7. No provider call and no cache involved: this data is PostgreSQL only, so there is no TTL to document.
 
 Quantity input (`quantitySchema`, reuse it in forms): a plain decimal string `^(0|[1-9]\d{0,15})(\.\d{1,8})?$`, i.e. non-negative, at most 16 integer and 8 fraction digits, matching `numeric(24,8)`. Rejected: exponent (`1e3`), thousands separators (`1 000`, `1,000`), decimal comma (`1,5`), signs, `NaN`, blanks/padding, leading/trailing dot, leading zeros (`007`), JS numbers. The empty string is invalid (the UI must send `null` for "no quantity"). `0` is valid and different from `null`.
 
@@ -306,3 +306,89 @@ Suggested keys: `['dashboard','summary',spaceId,period]`, `['dashboard','history
 ### Tests (S5)
 
 Unit `dashboard/compute.test.ts` (hand-computed EUR/USD/GBX fixtures, missing FX/price, watchlist, stale boundaries at 5/6 and 7/8 days, every period window over 6 years of weekdays, D20 trimming, movers ordering/ties/nulls, FX modes), `dashboard/compute-d23.test.ts` (same-day quote, no metrics row, FX 7/8/10 days old, suspended listing, `total - change = start` exactly, current mode with GBX and a rate dated before `to`, `quotedCurrencies`), `dashboard/limiter.test.ts`. Domain `history.test.ts`: applied rates, downsampling equivalence (plain and with mid gaps, leading/trailing trim and an FX-only hole), `fxToleranceDays` boundary 7/8, terminal point. Integration `dashboard/dashboard.int.test.ts` (exact strings through the real RPC handler, every period, FX modes, validation, no `fetch`/provider, module import scan, bounded space-scoped reads), `dashboard-d23.int.test.ts` (quote vs close, current mode, partial totals), `dashboard-limits.int.test.ts` (typed 429, other users unaffected), `db/roles.int.test.ts` (timeouts), and the three procedures in `spaces/idor-matrix.int.test.ts` (every returned `positionId` belongs to the target space, space B's distinct instrument never appears in space A's answers, garbage `period`: non-member `NOT_FOUND`, viewer `BAD_REQUEST`).
+
+## Table (S6)
+
+Code: contracts `packages/contracts/src/{columns,table,index}.ts`; server `packages/server/src/spaces/{table-columns,table-cells,table-query,service}.ts`. Spec: specs 15-18, 20, 22, 24, 38, 39. Migration `0005_drop_unused_metrics_indexes.sql` (drops indexes only). Decisions: D4 (performance in local currency), D9 (watchlist), D24 (default columns), orchestrator S6 decisions below.
+
+### D24 (decided by the user 2026-10-01)
+
+**D24 | Default table columns**: §18 set plus Quantité (editable, §33) and Valeur suivie (EUR); order: Société, Code, Cours EUR, Quantité, Valeur suivie, Capitalisation EUR, Secteur, Rendement du dividende, Performance période, Performance 12 mois, Performance 60 mois (2026-10-01). Same row in `MVP-PLAN.md` section 7.
+
+### Column registry
+
+- **Metadata** (`@waddlers/contracts`, browser-safe): `TABLE_COLUMNS` (id, French `label`, optional `shortLabel` (specs 18 wording), `group` (the specs 17 sections plus `tracking`), `dataType` text|enum|decimal|percent|money|date, `cell` kind, `unit`, `sortable`, `availability: 'available' | 'pending_s8'`), `TABLE_COLUMN_IDS`, `SORTABLE_COLUMN_IDS`, `COLUMN_GROUPS`, `DEFAULT_TABLE_COLUMNS`. The SQL mapping lives in `packages/server/src/spaces/table-columns.ts` (`SORT_SQL`, typed over `SortableColumnId`: a sortable column without a mapping does not compile; a unit test also compares the runtime keys).
+- **All 28 specs 17 columns are declared**, plus `perf_period` ("Performance période", resolves to `perf_<period>`) and two tracking columns: `quantity` ("Quantité", editable with `positions.setQuantity`) and `tracked_value_eur` ("Valeur suivie (EUR)" = quantity x `price_eur`, exact; `null` for a watchlist entry or without a EUR price, with a reason). `price` ("Cours (devise locale)") is **not sortable**: it mixes currencies (GBX, USD, EUR); sort `price_eur`. `fx_rate`, `description` are not sortable either.
+- **Available now**: `name, symbol, instrument_type, exchange, selection_reason, currency, sector, description, price, fx_rate, price_eur, price_date, perf_period, perf_1w, perf_1m, perf_6m, perf_1y, perf_5y, perf_max, quantity, tracked_value_eur`. **`pending_s8`** (always `null` = "—", never sortable, never invented): `market_cap, market_cap_eur, enterprise_value, ev_to_market_cap, net_debt, debt_ratio, debt_ratio_kind, main_holders, dividend_annual, dividend_yield`. S8 flips `availability`, adds the SQL mapping and (for filters, S7) the filter metadata.
+- **ETF (specs 24)**: `sector` is not applicable to an ETF and is `null` (display, search and sort alike: `case when type = 'stock' then sector end`), even if a value were stored; the pending fundamentals are `null` for everyone. Nothing is ever turned into `0`.
+- **D24 (2026-10-01), default columns**: `DEFAULT_TABLE_COLUMNS` = Société (`name`), Code (`symbol`), Cours EUR (`price_eur`), Quantité (`quantity`), Valeur suivie (`tracked_value_eur`), Capitalisation EUR (`market_cap_eur`, pending: "—" until S8), Secteur, Rendement du dividende (`dividend_yield`, pending), Performance période, Performance 12 mois (`perf_1y`), Performance 60 mois (`perf_5y`). It is the §18 set plus Quantité and Valeur suivie. Tested in the exact order. The user's saved configuration (S7) overrides it.
+
+### `positions.list` (additive evolution of the S3 procedure; `spaceScoped('viewer')`, still classified `space`)
+
+Input: `{ spaceId, page?: { offset >= 0 (0), limit 1..200 (200) }, period?, search?, sort?: { columnId, direction }, columns? }`.
+
+- `period`: the dashboard enum (`1w|1m|6m|1y|5y|max`), drives `perf_period`; default `1m` (the dashboard default); echoed in the output.
+- `search`: free text, at most 100 characters, NUL refused; trimmed, blank = no search.
+- `sort.columnId`: Zod whitelist enum derived from the sortable registry ids (`sortableColumnIdSchema`); `direction`: `asc|desc`. Any other id or direction is `BAD_REQUEST` (and only reached by someone with access: a non-member still gets `NOT_FOUND`, an anonymous caller `UNAUTHORIZED`).
+- `columns`: which `values` to return (default `DEFAULT_TABLE_COLUMNS`; `description` is only read from the database when requested). Pending columns come back `null`. Not related to sorting: any sortable column can be sorted whether it is displayed or not.
+- Filters are **S7**.
+- `POSITIONS_LIST_MAX` is now **200** (was 1000): at 200 rows x about 11 columns the answer is small and one page costs about 30 ms. A caller with no `page` gets the first 200 rows (the S3 list shows its "truncated" notice from `hasMore`; the Titres page of S3 keeps working).
+
+Output: `{ rows, total, hasMore, period, asOf }`. `total` = positions matching the search (the whole space without one); `hasMore = offset + rows.length < total`; `asOf` = newest `listing_metrics.computed_at` among the matching rows (ISO instant, `null` if none has metrics): when the worker last materialized the data, NOT a price time. Each row = the S3 fields (`id, quantity, selectionReason, addedAt, instrument, listing`) plus `values`, a partial record keyed by column id; the shape follows the column's `cell` kind:
+
+| cell | shape | columns |
+| --- | --- | --- |
+| `text` / `decimal` / `date` | `string \| null` (decimal: canonical, no trailing zeros; date `YYYY-MM-DD`) | `name, symbol, instrument_type, exchange, selection_reason, currency, sector, description, quantity, price_date` |
+| `money` | `{ amount, currency, asOf, isStale, reason }` (`amount` `null` + `reason` code when unavailable) | `price` (raw listing currency, GBX stays pence), `price_eur` (EUR), `tracked_value_eur` (EUR) |
+| `perf` | `{ value, baseDate, reason, asOf, isStale }` (percent, local currency D4; `reason` is the stored `listing_metrics` code, or `metrics_missing`) | `perf_period, perf_1w ... perf_max` |
+| `fx` | `{ eurPerUnit, currency, rateDate, isStale }` (specs 34 direction: EUR for 1 unit, `1 GBX = 0.0125 EUR`; EUR is exactly `1` with no rate date; no rate = `null`, never 1) | `fx_rate` |
+
+Reasons you may see: `metrics_missing` (no `listing_metrics` row yet), `price_missing`, `currency_invalid`, `rate_missing` (from `price_eur_reason`), `watchlist` (tracked value of an entry without quantity), the perf reason codes (`history_too_short`, ...). The UI shows "—" for every `null` and may use `reason` in a tooltip; it never shows 0.
+
+**Staleness (REVIEW-S4 P3-3, derived, no new column)**: `isStale` uses the dashboard rule on the stored dates against the current UTC date: a price (`as_of_date`) older than 5 days (`STALE_AFTER_DAYS`), an FX rate (`fx_rate_date`) older than 7 days (`FX_TOLERANCE_DAYS`); boundaries 5/6 and 7/8 tested. `price` and `perf_*` are stale on the price date; `price_eur` and `tracked_value_eur` also on the rate date; `fx_rate` on the rate date. Nothing is labelled realtime; `asOf` of a cell is the date of the price it is based on.
+
+### Sort, search, pagination semantics
+
+One read-only REPEATABLE READ transaction (page + `count(*)`/`max(computed_at)` on the same snapshot), PostgreSQL only: no provider call, no cache (so no TTL: freshness is the worker's, reported through the stale flags). Statement: `space_positions JOIN instruments JOIN listings JOIN exchanges LEFT JOIN listing_metrics`, ALWAYS `WHERE space_positions.space_id = <AuthorizedSpace.id>` (a repository function cannot be called without the branded space; `access.test.ts` has the `@ts-expect-error` cases for the new ones).
+
+- **Sort**: `ORDER BY <mapped expr> asc|desc NULLS LAST, lower(instrument.name) asc, space_positions.id asc`. NULLS LAST in both directions, deterministic tiebreak, so offset paging has no duplicate or gap under a stable sort. Text is compared case-insensitively (`lower`); `perf_period` is the column of the requested period; `tracked_value_eur` is the exact SQL product `quantity * price_eur`. Only the mapped expressions reach SQL; `columnId` is never interpolated. No sort = name, then id.
+- **Search** (specs 20): case-insensitive substring (`ILIKE '%term%' ESCAPE '\'`) over name, code (symbol), ISIN, sector (ETF: none), currency (specs 20 example "USD"), exchange name and MIC. `%`, `_` and `\` in the term are escaped, so they are literal (tests: `50%`, `%`, `_`, `\`, `%%`, a SQL-injection string). One bound parameter. `total` is the filtered count. Search composes with sort and pages.
+- **Pagination**: offset/limit (limit <= 200). An offset past the end returns no rows, the right `total` and `hasMore: false`.
+
+### Indexes and EXPLAIN (REVIEW-S4: partial indexes validated, then dropped)
+
+Measured on the test DB (PostgreSQL 17.11), `ANALYZE`d, with the table query of the code (`EXPLAIN (ANALYZE, BUFFERS)`; script kept out of the repo, the numbers below are reproduced by `spaces/table-scale.int.test.ts`):
+
+| Data | Statement | Plan | Execution |
+| --- | --- | --- | --- |
+| 5 000 positions in 10 000 listings | any sort, any search (page, 50 rows) | hash joins over sequential scans of the small tables, top-N heapsort over the 5 000 rows of the space, 623 buffers | 9.6 - 11.4 ms |
+| 5 000 positions among 65 000 rows (13 spaces) | any sort / search | `Bitmap Index Scan on space_positions_space_instrument_unique` (the existing unique index serves the by-space path), then `Index Scan` on the PKs of instruments / listings / listing_metrics | sort 8.3 - 14.6 ms; search + count 16 - 20 ms |
+| 50 positions among 65 050 rows | any sort / search | same indexes, nested loops, 50 PK probes per table | 0.15 - 0.21 ms |
+
+End to end through the in-process HTTP handler (auth, access check, query, mapping, Zod output validation), 5 000 positions + a second space of 5 000, median of 3, page of 50 unless noted: default 17 ms, sort name 15, sort perf_period 17, sort price_eur 18, sort tracked_value_eur 18, sector asc deep page (offset 4 950) 29, search name 22, search sector + sort perf 27, search one symbol 23, search no hit 22, **200 rows with all 31 columns 28 ms**. Budget (< 300 ms) asserted in CI (`table-scale.int.test.ts`, seeding takes about 2 s).
+
+- **The seven partial indexes of 0004 on `listing_metrics` (`price_eur`, `perf_1w` ... `perf_max`) were never used**: not one scan in any scenario; the planner scopes by space first, then sorts the space's rows. They only cost write time on every metrics upsert. **Dropped in 0005** (`DROP INDEX IF EXISTS`; no data change, safe on a populated database, instant). Re-add one only when an EXPLAIN shows a query needing it (S7 range filters are scoped by space as well).
+- **pg_trgm GIN indexes on `instruments.name` / `listings.symbol`: not added.** Tried on the same data: zero scans. The search is an OR over columns of four joined tables, scoped to the space first (at most a few thousand rows), which a trigram index cannot serve; the whole search costs 16 - 20 ms. They would become useful for a global instrument search (D11 "add instrument" form), not for this table. `pg_trgm` itself is still installed (migration 0000).
+- **Positions-by-space path**: the existing unique index `(space_id, instrument_id)` is used; no new index. A covering index was not needed.
+
+### Limiter decision: none
+
+`positions.list` is **not** put behind the dashboard limiter. Measured cost 15 - 30 ms per page (the dashboard `max` costs about 500 ms of CPU, which is why it is capped). Bounded by construction: at most 200 rows, one statement pair, `statement_timeout = 10 s` and `idle_in_transaction_session_timeout = 30 s` on the app role. The dashboard limiter would give false 429s while typing a search, clicking sort headers and paging (a token bucket of 30/min shared with the dashboard calls); the front end debounces the search anyway. Revisit if a measurement on real data (S8 descriptions, much larger spaces) or the security audit (S10) says otherwise: the shared `DashboardLimiter` instance and `admitted()` in `router.ts` are the mechanism to reuse (in-flight cap per (user, procedure) only).
+
+### What the frontend should call
+
+```ts
+// one query per (space, period, search, sort, page, columns); the oRPC key carries the whole input
+const input = { spaceId, period, search: debouncedSearch || undefined, sort, page: { offset, limit }, columns: visibleColumnIds };
+useQuery(orpc.positions.list.queryOptions({ input, staleTime: 60_000, placeholderData: keepPreviousData }));
+```
+
+- Keys: `['positions','list', ...]` built by `orpc.positions.list.queryOptions` (the input is part of the key). Invalidate with `orpc.positions.list.key({ input: { spaceId } })` (partial match on the space; check it matches the other inputs when wiring) after `positions.setQuantity` / `positions.remove`, plus `orpc.spaces.list.key()`, and the dashboard summary after a quantity change.
+- `staleTime` 60 s (the worker refreshes quotes every 15 minutes; a refetch reads PostgreSQL only); `keepPreviousData` while paging/sorting so the table does not flash. Debounce the search (about 300 ms) and reset `offset` to 0 whenever `search`, `sort`, `period` change. `period` = the URL period of the dashboard (`?periode=`), so "Performance période" follows it.
+- `columns`: send the visible column ids in a stable order (dedupe, at most 64). Render by `TABLE_COLUMNS_BY_ID.get(id).cell`; the same registry gives labels, `shortLabel`, groups, units and `sortable` (only offer sort on `sortable` columns, and never on `pending_s8` ones, which render "—" and can be shown as "bientôt disponible"). Use `@waddlers/contracts` types (`PositionsListOutput`, `TablePositionRow`, `MoneyCell`, `PerfCell`, `FxCell`), never redefine them.
+- Rendering: `null` -> "—"; show `isStale` as a discreet "ancien" marker with the cell `asOf` date; GBX price stays in pence (show the `GBX` currency); the quantity column is editable for `owner`/`editor` only (role from `spaces.list`); the tracked-value cell is "—" for a watchlist entry. `asOf` of the page = "données calculées le ..." (worker time). Page controls from `total`/`hasMore`.
+- Errors: `BAD_REQUEST` (never render raw issues; can only come from a hand-built URL), `NOT_FOUND`/`UNAUTHORIZED`/`FORBIDDEN` as in S3.
+
+### Tests (S6)
+
+Unit: `spaces/table-columns.test.ts` (every specs 17 column present in its section, unique ids/labels, exact D24 default order, pending never sortable, whitelist rejects pending/unknown/injection ids, limit 200, NUL search, sortable whitelist == SQL mapping keys, `escapeLike`), `spaces/table-cells.test.ts` (hand-computed GBX/USD/EUR rates in the specs 34 direction, missing rate = `null` not 1, stale boundaries 5/6 and 7/8, tracked value incl. a real zero quantity, watchlist, no metrics row, perf reasons, pending columns always `null`). Integration: `spaces/table.int.test.ts` (every sortable column x asc/desc: monotone, nulls last, stable tiebreak, deterministic; perf_period for each period; pagination consistency under 4 sorts; watchlist; GBX; ETF; stale; `asOf`; the old no-page call), `spaces/table-search.int.test.ts` (every search field, case-insensitive, ETF sector, wildcards `% _ \`, composition with sort/paging, GBX through the real metrics pipeline), `spaces/table-scale.int.test.ts` (5 000 positions, budget 300 ms, 25 pages without a duplicate, only the PK left on `listing_metrics`), `spaces/idor-matrix.int.test.ts` (the matrix row now sends sort/period/columns; invalid sort/period/search/limit/columns: `NOT_FOUND` for a non-member, `BAD_REQUEST` for a viewer, 401 anonymous; each space returns only its own rows whatever the sort/search/columns, and searching the other space's name/code/ISIN/exchange/currency finds nothing).

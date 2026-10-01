@@ -45,7 +45,7 @@ Decision recorded with this pass: **D21** (end price: the official close for a d
 
 - **EODHD adapter security review:** mandatory when the adapter is written (credential handling, URL construction, response validation, `AbortSignal`, mapping of `close` vs `adjusted_close`, D3).
 - **Quote chunking** and **split worker DB role:** see above.
-- **Partial indexes on `listing_metrics`:** validate with `EXPLAIN` on realistic data in S6.
+- **Partial indexes on `listing_metrics`:** **validated in S6 and dropped** (migration 0005). EXPLAIN (ANALYZE, BUFFERS) on 5 000 positions among 65 000 rows: zero scans in every sort/search scenario; the table query is scoped by `space_positions` first. Details and numbers: `BACKEND.md` "Table (S6)".
 - **Float noise from providers:** a price such as `183.45000000000002` is rejected (more than 8 decimals) instead of rounded; the adapter must format numbers before returning them.
 
 ## Targeted re-review and re-audit (0281411) — verdict: approve
@@ -59,5 +59,5 @@ All review P2s and audit findings confirmed fixed or deferred with a reason; no 
 | Re-review R3 | P3 | Metrics window uses `DEFAULT_TOLERANCE_DAYS` while `computePerformance` uses its default implicitly | **Fixed (S5 prerequisite).** `METRICS_TOLERANCE_DAYS` feeds both `windowStart` and `computePerformance({ toleranceDays })`. |
 | Re-review R4 | P3 | Quote rejected by the service scale check recorded as `not_found`; stored quotes can get `bad_payload` if `recordSuccesses` throws | Open (diagnostics only, no financial effect). |
 | Re-review R5 | P3 | Markdown typo in `MARKET-DATA.md` | **Fixed.** |
-| Re-review P3-3 | P3 | `listing_metrics` has no staleness flag | Open for S6: derive staleness from `as_of_date` / `computed_at`, or add a column. |
+| Re-review P3-3 | P3 | `listing_metrics` has no staleness flag | **Fixed (S6).** Derived at read time, no column: `isStale` per cell in `positions.list` from `as_of_date` (price older than 5 days, `STALE_AFTER_DAYS`) and `fx_rate_date` (rate older than 7 days, `FX_TOLERANCE_DAYS`), the dashboard rule; boundaries 5/6 and 7/8 tested (`spaces/table-cells.test.ts`, `table.int.test.ts`). The page `asOf` is the newest `computed_at`. |
 | Re-audit P3 | P3 | Pattern-only redaction misses JSON-style `"api_token":"…"` when the secret is not configured | Open; covered today because the token is always passed as a secret. Handle at the EODHD adapter security review. |

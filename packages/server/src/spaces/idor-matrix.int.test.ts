@@ -69,7 +69,13 @@ const PROCEDURES: ProcedureSpec[] = [
     path: 'positions.list',
     minRole: 'viewer',
     takesPosition: false,
-    input: (spaceId) => ({ spaceId }),
+    // The S6 table input: sort, search, period and columns are part of the matrix payload.
+    input: (spaceId) => ({
+      spaceId,
+      period: '1m',
+      sort: { columnId: 'perf_period', direction: 'desc' },
+      columns: ['name', 'symbol', 'price_eur', 'tracked_value_eur', 'description'],
+    }),
   },
   ...['summary', 'history', 'movers'].map((name): ProcedureSpec => ({
     path: `dashboard.${name}`,
@@ -401,6 +407,72 @@ describe.each(PROCEDURES.filter((p) => p.path.startsWith('dashboard.')))(
     });
   },
 );
+
+describe('positions.list (table, S6) isolation and validation', () => {
+  const spec = PROCEDURES.find((p) => p.path === 'positions.list')!;
+  type Listed = { rows: { id: string; instrument: { name: string } }[]; total: number };
+  const list = async (actor: Actor, spaceId: string, extra: Record<string, unknown> = {}) =>
+    (await call(spec, actor, spaceId, fx.posA, { spaceId, ...extra })).json as unknown as Listed;
+
+  it.each([
+    ['unknown column', { sort: { columnId: 'password', direction: 'asc' } }],
+    ['pending column', { sort: { columnId: 'market_cap_eur', direction: 'asc' } }],
+    ['bad direction', { sort: { columnId: 'name', direction: 'sideways' } }],
+    ['sql in column', { sort: { columnId: 'name; drop table spaces', direction: 'asc' } }],
+    ['bad period', { period: 'bogus' }],
+    ['NUL in search', { search: 'a\u0000b' }],
+    ['limit over 200', { page: { offset: 0, limit: 201 } }],
+    ['unknown requested column', { columns: ['nope'] }],
+  ])('%s: NOT_FOUND for a non-member (access first), BAD_REQUEST for a viewer', async (_n, bad) => {
+    const nonMember = await call(spec, 'nonMember', fx.spaceA, fx.posA, {
+      spaceId: fx.spaceA,
+      ...bad,
+    });
+    expect(nonMember.json.code).toBe('NOT_FOUND');
+    expect(nonMember.status).toBe(404);
+    const other = await call(spec, 'memberOfAnotherSpace', fx.spaceA, fx.posA, {
+      spaceId: fx.spaceA,
+      ...bad,
+    });
+    expect(other.json.code).toBe('NOT_FOUND');
+    const viewer = await call(spec, 'viewer', fx.spaceA, fx.posA, { spaceId: fx.spaceA, ...bad });
+    expect(viewer.json.code).toBe('BAD_REQUEST');
+    expect(viewer.status).toBe(400);
+    expect(
+      (await call(spec, 'anonymous', fx.spaceA, fx.posA, { spaceId: fx.spaceA, ...bad })).status,
+    ).toBe(401);
+  });
+
+  it('each space answers with its own rows only, whatever the sort, search or columns', async () => {
+    const a = await list('owner', fx.spaceA);
+    const b = await list('memberOfAnotherSpace', fx.spaceB);
+    expect(a.rows.map((r) => r.instrument.name).sort()).toEqual(['Air Liquide', 'World ETF']);
+    expect(b.rows.map((r) => r.instrument.name)).toEqual(['Microsoft']);
+    expect([a.total, b.total]).toEqual([2, 1]);
+    // Searching for the other space's content (name, code, ISIN, exchange) through the own space finds nothing.
+    for (const search of ['Microsoft', 'MSFT', 'US5949181045', 'Nasdaq', 'XNAS', 'USD']) {
+      const viaA = await list('owner', fx.spaceA, { search });
+      expect(viaA.rows, search).toEqual([]);
+      expect(viaA.total, search).toBe(0);
+    }
+    // ... and the same search through the owning space does find it (not vacuous).
+    expect((await list('memberOfAnotherSpace', fx.spaceB, { search: 'msft' })).total).toBe(1);
+    for (const sortColumn of [
+      'name',
+      'perf_period',
+      'tracked_value_eur',
+      'quantity',
+      'price_eur',
+    ]) {
+      const sorted = await list('owner', fx.spaceA, {
+        sort: { columnId: sortColumn, direction: 'desc' },
+        columns: ['description', 'name', 'tracked_value_eur'],
+      });
+      expect(JSON.stringify(sorted)).not.toContain('Microsoft');
+      expect(sorted.rows.map((r) => r.id)).not.toContain(fx.posB);
+    }
+  });
+});
 
 describe('dashboard totals are per space (distinct instruments and values)', () => {
   it('summary of A = 1240 EUR (AI 10 x 100 + CW8 3 x 80), of B = 1400 EUR (MSFT 7 x 250 / 1.25)', async () => {
