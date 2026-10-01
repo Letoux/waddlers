@@ -3,7 +3,8 @@ import { Decimal, asDecimal } from './decimal';
 import { normalizeCurrency } from './currency';
 import { convertAmount } from './fx';
 import { cleanSeries, resolveTolerance, type PricePoint } from './performance';
-import { assertPlainDate, compareDates, diffDays, type PlainDate } from './plain-date';
+import { assertPlainDate, compareDates, dayNumber, type PlainDate } from './plain-date';
+import { computeSpaceValue } from './valuation';
 
 export const MAX_SERIES_POINTS = 400;
 
@@ -84,6 +85,23 @@ export interface ValueSeries {
   leadingMissing: string[];
 }
 
+/**
+ * D23: the end of the series, built from exactly the inputs of the current total (the D21 end
+ * price of each counted position x the current-rule FX). Same function as the total
+ * (`computeSpaceValue`), so `value` equals the space total bit for bit whenever it is complete.
+ */
+export interface TerminalInput {
+  /** The "as of" date of the total; must lie in `[from, to]`, else the terminal is ignored. */
+  date: PlainDate;
+  /** Per counted position id: the end price in its price currency and its date. Absent / null price = unavailable. */
+  prices: ReadonlyMap<
+    string,
+    { price: Decimal | null; currency: CurrencyCode; date: PlainDate | null }
+  >;
+  /** Latest rate per major currency (`1 EUR = rate`) with its date, already filtered by the current rule (<= 7 days). */
+  rates: ReadonlyMap<CurrencyCode, { rate: Decimal; date: PlainDate }>;
+}
+
 export interface ValueSeriesInput {
   positions: readonly HistoryPosition[];
   fx: FxHistory;
@@ -91,29 +109,34 @@ export interface ValueSeriesInput {
   from: PlainDate;
   to: PlainDate;
   referenceCurrency?: CurrencyCode;
-  /** Forward-fill limit (calendar days) for both closes and FX. */
+  /** Forward-fill limit (calendar days) for closes (and for FX unless `fxToleranceDays` is set). */
   toleranceDays?: number;
+  /** Forward-fill limit (calendar days) for FX rates; defaults to `toleranceDays`. */
+  fxToleranceDays?: number;
   maxPoints?: number;
+  /**
+   * When given AND complete (every counted position has an end price and a rate), the series ends
+   * with a terminal point at `terminal.date` equal to the current total (it replaces a closes-based
+   * point of the same date). Incomplete: ignored, the series keeps its real last date.
+   */
+  terminal?: TerminalInput;
 }
 
 interface Dated<T> {
   date: PlainDate;
+  /** Day number of `date`, computed once (the lookups below run millions of times on `max`). */
+  n: number;
   v: T;
 }
 
-/** Latest entry on/before `date` within `tolerance` days; `sorted` ascending. Binary search. */
-function latest<T>(
-  sorted: readonly Dated<T>[],
-  date: PlainDate,
-  tolerance: number,
-): Dated<T> | null {
+/** Latest entry on/before day `n` within `tolerance` days; `sorted` ascending. Binary search. */
+function latest<T>(sorted: readonly Dated<T>[], n: number, tolerance: number): Dated<T> | null {
   let lo = 0;
   let hi = sorted.length - 1;
   let idx = -1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
-    const entry = sorted[mid] as Dated<T>;
-    if (compareDates(entry.date, date) <= 0) {
+    if ((sorted[mid] as Dated<T>).n <= n) {
       idx = mid;
       lo = mid + 1;
     } else {
@@ -122,7 +145,7 @@ function latest<T>(
   }
   if (idx < 0) return null;
   const found = sorted[idx] as Dated<T>;
-  return diffDays(found.date, date) <= tolerance ? found : null;
+  return n - found.n <= tolerance ? found : null;
 }
 
 /**
@@ -149,13 +172,15 @@ export function downsample<T>(points: readonly T[], max: number = MAX_SERIES_POI
  *   of `computePerformance`: close on or before the target within tolerance, never looking
  *   forward) plus every later date in (from, to] with a real close for a counted position.
  *   Points after `to` are ignored. `from > to` throws RangeError.
- * - Closes and FX are forward-filled within `toleranceDays`. A close <= 0 is treated as
+ * - Closes are forward-filled within `toleranceDays`, FX within `fxToleranceDays` (default: the same). A close <= 0 is treated as
  *   missing (it can be carried over from an earlier valid close, never becomes a 0 value).
  * - A day where any counted position is missing (no close/FX, invalid quantity) has
  *   `value: null` and lists the ids: never a partial sum, never 0 (D20: no data is shown
  *   before a recent listing exists).
  * - Leading and trailing null points are trimmed: the series starts and ends on a complete
  *   point, so the chart endpoints equal the headline endpoints. Nulls in the middle stay (gaps).
+ * - D23: a complete `terminal` point (end prices x current rates, valued like the space total) ends
+ *   the series at its date; incomplete or out of range, it is ignored.
  * - Headline = first vs last point of the trimmed series (`fromDate` may be later than `from`).
  *   Downsampling happens after and keeps first and last.
  */
@@ -166,6 +191,7 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
   if (compareDates(from, to) > 0) throw new RangeError('from must not be after to');
   const reference = assertReferenceCurrency(input.referenceCurrency ?? 'EUR');
   const tolerance = resolveTolerance(input.toleranceDays);
+  const fxTolerance = resolveTolerance(input.fxToleranceDays ?? input.toleranceDays);
   const maxPoints = input.maxPoints ?? MAX_SERIES_POINTS;
 
   const invalidPositions: ValueSeries['invalidPositions'] = [];
@@ -180,7 +206,11 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
         quantity,
         valid,
         currency: p.currency,
-        closes: cleanSeries(p.closes).map((c) => ({ date: c.date, v: c.close })),
+        closes: cleanSeries(p.closes).map((c) => ({
+          date: c.date,
+          n: dayNumber(c.date),
+          v: c.close,
+        })),
       };
     });
 
@@ -197,8 +227,8 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
     fxSeries.set(
       currency,
       [...byDate.entries()]
-        .map(([date, v]) => ({ date, v }))
-        .sort((a, b) => compareDates(a.date, b.date)),
+        .map(([date, v]) => ({ date, n: dayNumber(date), v }))
+        .sort((a, b) => a.n - b.n),
     );
   }
 
@@ -220,11 +250,11 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
     ...new Set(majors.filter((m): m is CurrencyCode => m !== null && m !== reference)),
   ].sort();
 
-  const ratesAt = (date: PlainDate) => {
+  const ratesAt = (n: number) => {
     const rates = new Map<CurrencyCode, Decimal>();
     const rateDates = new Map<CurrencyCode, PlainDate>();
     for (const [currency, series] of fxSeries) {
-      const rate = latest(series, date, tolerance);
+      const rate = latest(series, n, fxTolerance);
       if (rate !== null) {
         rates.set(currency, rate.v);
         rateDates.set(currency, rate.date);
@@ -245,19 +275,63 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
 
   interface Day {
     date: PlainDate;
+    n: number;
     fx: AppliedRate[];
     missing: string[];
     dataDate: PlainDate | null;
+    /** Terminal day only: the precomputed total (no closes behind it). */
+    preset?: Decimal;
   }
+
+  // D23 terminal day: valued by the SAME function as the space total, no tolerance on prices.
+  const terminalDay = (): Day | null => {
+    const t = input.terminal;
+    if (t === undefined || compareDates(t.date, from) < 0 || compareDates(t.date, to) > 0)
+      return null;
+    const rates = new Map([...t.rates].map(([currency, r]) => [currency, r.rate]));
+    const value = computeSpaceValue(
+      counted.map((p) => {
+        const end = t.prices.get(p.id);
+        return {
+          id: p.id,
+          quantity: p.quantity,
+          price:
+            end === undefined || end.price === null
+              ? null
+              : { amount: end.price, currency: end.currency },
+        };
+      }),
+      rates,
+      reference,
+    );
+    if (!value.isComplete || value.total === null) return null;
+    const dates = counted.flatMap((p) => {
+      const d = t.prices.get(p.id)?.date ?? null;
+      return d === null ? [] : [d];
+    });
+    return {
+      date: t.date,
+      n: dayNumber(t.date),
+      fx: heldCurrencies.flatMap((currency) => {
+        const r = t.rates.get(currency);
+        return r === undefined ? [] : [{ currency, rate: r.rate, date: r.date }];
+      }),
+      missing: [],
+      dataDate: dates.length === 0 ? null : dates.reduce((a, b) => (a >= b ? a : b)),
+      preset: value.total,
+    };
+  };
 
   // Phase 1 (every date, lookups only): which positions are missing, which close date is behind
   // the point, which rates were applied. No Decimal sum yet.
-  const days: Day[] = timeline.map((date) => {
-    const { rates, rateDates } = ratesAt(date);
+  const terminal = terminalDay();
+  let days: Day[] = timeline.map((date) => {
+    const n = dayNumber(date);
+    const { rates, rateDates } = ratesAt(n);
     const missing: string[] = [];
     let dataDate: PlainDate | null = null;
     counted.forEach((p, i) => {
-      const close = p.valid ? latest(p.closes, date, tolerance) : null;
+      const close = p.valid ? latest(p.closes, n, tolerance) : null;
       if (close === null || !convertible(majors[i] ?? null, rates)) {
         missing.push(p.id);
         return;
@@ -271,8 +345,12 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
         ? [{ currency, rate, date: rateDate }]
         : [];
     });
-    return { date, fx, missing, dataDate: missing.length === 0 ? dataDate : null };
+    return { date, n, fx, missing, dataDate: missing.length === 0 ? dataDate : null };
   });
+  if (terminal !== null) {
+    // The terminal point replaces the closes-based day of the same date, or ends the series.
+    days = [...days.filter((d) => d.date !== terminal.date), terminal].sort((a, b) => a.n - b.n);
+  }
 
   const complete = (d: Day) => d.missing.length === 0;
   const firstIdx = days.findIndex(complete);
@@ -291,11 +369,12 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
   const trimmed = days.slice(firstIdx, lastIdx + 1);
 
   // Phase 2: the sum, for the points that survive downsampling only (first and last always do).
-  const valueAt = (date: PlainDate): Decimal => {
-    const { rates } = ratesAt(date);
+  const valueAt = (day: Day): Decimal => {
+    if (day.preset !== undefined) return day.preset;
+    const { rates } = ratesAt(day.n);
     let value = new Decimal(0);
     for (const p of counted) {
-      const close = latest(p.closes, date, tolerance);
+      const close = latest(p.closes, day.n, tolerance);
       const converted =
         close === null ? null : convertAmount(close.v, p.currency, reference, rates);
       if (converted === null || !converted.ok)
@@ -306,7 +385,7 @@ export function buildValueSeries(input: ValueSeriesInput): ValueSeries {
   };
   const kept = downsample(trimmed, maxPoints).map((d) => ({
     ...d,
-    value: complete(d) ? valueAt(d.date) : null,
+    value: complete(d) ? valueAt(d) : null,
   }));
 
   const first = kept[0] as (typeof kept)[number] & { value: Decimal };

@@ -40,5 +40,7 @@ export function decimalToString(value: Decimal | null | undefined): string | nul
  * into our arithmetic. Digits are copied exactly, not re-rounded.
  */
 export function asDecimal(value: DecimalBase): Decimal {
-  return new Decimal(value);
+  // Decimals are immutable: an instance already built by the domain clone is returned as is
+  // (hot path of the history series, which wraps every close and rate once per use).
+  return value.constructor === Decimal ? (value as Decimal) : new Decimal(value);
 }

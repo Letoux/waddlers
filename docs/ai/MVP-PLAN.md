@@ -1,6 +1,6 @@
 # Waddlers — MVP implementation plan
 
-Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1, S2, S3, S4 (EODHD adapter pending D1 checks); S5 backend done (frontend pending)** (decisions: `docs/ai/BACKEND.md`, `docs/ai/FRONTEND.md`, `docs/ai/DOMAIN.md`; reviews: `docs/ai/REVIEW-S1.md` … `docs/ai/REVIEW-S4.md`; market data: `docs/ai/MARKET-DATA.md`).
+Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1, S2, S3, S4 (EODHD adapter pending D1 checks); S5 backend done and fixed after review (`REVIEW-S5.md`, D23), frontend in progress** (decisions: `docs/ai/BACKEND.md`, `docs/ai/FRONTEND.md`, `docs/ai/DOMAIN.md`; reviews: `docs/ai/REVIEW-S1.md` … `docs/ai/REVIEW-S5.md`; market data: `docs/ai/MARKET-DATA.md`).
 Source of truth remains `specs.md`; this file records the agreed decomposition and design.
 
 ## 1. Objective
@@ -150,6 +150,7 @@ Decided by the user on 2026-09-29:
 | D20 | Missing history for recent listings | Decided 2026-09-29: "on ne ment pas sur la donnée". A history day where any counted position lacks a close or FX has no value (never a partial sum); leading/trailing empty days are trimmed so the chart starts at the first complete day, whose actual close date is shown ("depuis le …"); mid-series gaps stay visible. Details: `docs/ai/DOMAIN.md`. |
 | D21 | End price | Official close for a date wins over a same-day quote; the quote is used only until that close exists (2026-09-30) |
 | D22 | FX in the chart | Decided 2026-09-30: **FX history is kept.** `dashboard.history` takes `fxMode: 'historical' \| 'current'` (default `historical`). `historical`: each point is converted at that day's stored rate, forward-filled within the FX tolerance. `current`: every point uses the latest rate per currency, label "au taux de change actuel", rate date returned. Each point carries the rate(s) applied (tooltip; `eurPerUnit` for the specs §34 display direction). A missing rate is never replaced by 1. The summary's current value keeps the latest rate; movers stay in local currency (D4). |
+| D23 | Dashboard value vs delta | The series ends with a terminal point at asOf built from exactly the inputs of the total (D21 end price × current-rule FX, same positions); chart end = headline end = total. If it cannot be complete, change carries its real toDate (or is null when the valued set differs) — never a delta mislabelled as current (2026-09-30) |
 
 Non-blocking (can default and revisit):
 

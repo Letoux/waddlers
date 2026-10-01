@@ -24,6 +24,7 @@ import {
   type FxPoint,
   type Headline,
   type Period,
+  type TerminalInput,
   type PlainDate,
   type ValueSeries,
 } from '@waddlers/domain';
@@ -85,6 +86,27 @@ export function foreignCurrencies(positions: readonly SpacePositionData[]): stri
   return [...set].sort();
 }
 
+/**
+ * Raw currencies (minor units included, sorted, distinct) the given HELD positions are quoted in,
+ * per major non-EUR currency: a GBP rate serving a GBX listing gives `GBP -> ['GBX']`, serving both
+ * gives `['GBP', 'GBX']`. Lets the UI show the pence note only when a minor-unit position is involved.
+ * Bounded by the number of distinct currency codes held.
+ */
+export function quotedCurrencies(
+  positions: readonly SpacePositionData[],
+): ReadonlyMap<string, string[]> {
+  const out = new Map<string, Set<string>>();
+  for (const p of positions) {
+    if (!held(p)) continue;
+    for (const cur of [p.currency, p.metrics?.priceCurrency]) {
+      const major = cur === undefined ? null : majorOf(cur);
+      if (cur === undefined || !major || major === REFERENCE_CURRENCY) continue;
+      out.set(major, (out.get(major) ?? new Set()).add(cur));
+    }
+  }
+  return new Map([...out].map(([major, set]) => [major, [...set].sort()]));
+}
+
 /** Newest end-price date over the held positions: "today" of the space. */
 export function spaceAsOf(positions: readonly SpacePositionData[]): PlainDate | null {
   let best: PlainDate | null = null;
@@ -110,6 +132,25 @@ export function latestFxRows(
   return latest;
 }
 
+/**
+ * THE "current rule" for FX (D21/D22/D23): per currency the newest stored rate dated in
+ * `[asOf - toleranceDays, asOf]`, parsed once; an unparsable or non-positive rate is no rate.
+ * Used by the total, by the terminal point of the series and by the `current` FX mode.
+ */
+export function currentRates(
+  fxRows: readonly FxRow[],
+  asOf: PlainDate,
+  toleranceDays: number,
+): { rows: Map<string, FxRow>; rates: Map<string, { rate: Decimal; date: PlainDate }> } {
+  const rows = latestFxRows(fxRows, asOf, toleranceDays);
+  const rates = new Map<string, { rate: Decimal; date: PlainDate }>();
+  for (const [currency, row] of rows) {
+    const rate = parseDecimal(row.ratePerEur);
+    if (rate) rates.set(currency, { rate, date: row.date });
+  }
+  return { rows, rates };
+}
+
 export interface CurrentValue {
   total: DashboardSummaryOutput['total'];
   isComplete: boolean;
@@ -133,13 +174,15 @@ export function computeCurrentValue(
   fxToleranceDays: number,
 ): CurrentValue {
   const asOfRef = spaceAsOf(positions);
-  const latestFx =
-    asOfRef === null ? new Map<string, FxRow>() : latestFxRows(fxRows, asOfRef, fxToleranceDays);
-  const rates = new Map<string, Decimal>();
-  for (const [currency, row] of latestFx) {
-    const rate = parseDecimal(row.ratePerEur);
-    if (rate) rates.set(currency, rate);
-  }
+  const current =
+    asOfRef === null
+      ? {
+          rows: new Map<string, FxRow>(),
+          rates: new Map<string, { rate: Decimal; date: PlainDate }>(),
+        }
+      : currentRates(fxRows, asOfRef, fxToleranceDays);
+  const latestFx = current.rows;
+  const rates = new Map([...current.rates].map(([currency, r]) => [currency, r.rate]));
 
   const value = computeSpaceValue(
     positions.map((p) => ({
@@ -176,6 +219,7 @@ export function computeCurrentValue(
       return major && major !== REFERENCE_CURRENCY ? [major] : [];
     }),
   );
+  const quotedByMajor = quotedCurrencies(valuedPositions);
   const fxUsed = [...usedFx].sort().flatMap((c) => latestFx.get(c) ?? []);
   const oldest = (dates: PlainDate[]) =>
     dates.length === 0 ? null : dates.reduce((a, b) => (compareDates(a, b) <= 0 ? a : b));
@@ -195,7 +239,7 @@ export function computeCurrentValue(
     valuedCount: valued.length,
     watchlistCount: positions.filter((p) => !held(p)).length,
     freshness: {
-      asOf: oldest(priceDates),
+      oldestPriceDate: oldest(priceDates),
       fxAsOf: oldest(fxUsed.map((r) => r.date)),
       isStale: stalePositions.length > 0 || staleFx.length > 0,
       stalePositions,
@@ -208,6 +252,7 @@ export function computeCurrentValue(
         currency: r.currency,
         ratePerEur: decimalToString(rates.get(r.currency) as Decimal) as string,
         date: r.date,
+        quotedCurrencies: quotedByMajor.get(r.currency) ?? [],
       })),
   };
 }
@@ -237,18 +282,27 @@ export function historyFx(
   options: HistoryFxOptions,
 ): { fx: FxHistory; current: FxRow[] | null } {
   const fx = new Map<string, FxPoint[]>();
-  const push = (currency: string, date: PlainDate, ratePerEur: string) => {
-    const rate = parseDecimal(ratePerEur);
-    if (rate) fx.set(currency, [...(fx.get(currency) ?? []), { date, rate }]);
+  // In place (an earlier spread-copy per point was quadratic on `max`).
+  const list = (currency: string) => {
+    let points = fx.get(currency);
+    if (points === undefined) fx.set(currency, (points = []));
+    return points;
   };
   if (options.mode === 'historical') {
-    for (const r of fxRows) push(r.currency, r.date, r.ratePerEur);
+    for (const r of fxRows) {
+      const rate = parseDecimal(r.ratePerEur);
+      if (rate) list(r.currency).push({ date: r.date, rate });
+    }
     return { fx, current: null };
   }
   const latest = latestFxRows(fxRows, options.to, options.fxToleranceDays);
   const dates = [...new Set(options.dates)].sort(compareDates);
-  for (const row of latest.values())
-    for (const date of dates) push(row.currency, date, row.ratePerEur);
+  for (const row of latest.values()) {
+    const rate = parseDecimal(row.ratePerEur); // once per currency, not once per date
+    if (!rate) continue;
+    const points = list(row.currency);
+    for (const date of dates) points.push({ date, rate });
+  }
   return { fx, current: [...latest.values()].sort((a, b) => (a.currency < b.currency ? -1 : 1)) };
 }
 
@@ -259,7 +313,44 @@ export interface HistoryResult {
   currentFx: FxRow[] | null;
 }
 
-/** Value series over `[from, to]` from the stored closes/FX (D6, D20). `from` for `max` = first close. */
+/**
+ * D23: the terminal point of the series, from exactly the inputs of the total (`computeCurrentValue`):
+ * the D21 end price of every held position (`listing_metrics.price`, in its price currency) and the
+ * current-rule rates (`currentRates`, at most `fxToleranceDays` old at `asOf`).
+ */
+function terminalOf(
+  positions: readonly SpacePositionData[],
+  fxRows: readonly FxRow[],
+  asOf: PlainDate,
+  fxToleranceDays: number,
+): TerminalInput {
+  return {
+    date: asOf,
+    prices: new Map(
+      positions.flatMap((p) =>
+        p.metrics === null
+          ? []
+          : [
+              [
+                p.id,
+                {
+                  price: parseDecimal(p.metrics.price),
+                  currency: p.metrics.priceCurrency,
+                  date: p.metrics.asOfDate,
+                },
+              ] as const,
+            ],
+      ),
+    ),
+    rates: currentRates(fxRows, asOf, fxToleranceDays).rates,
+  };
+}
+
+/**
+ * Value series over `[from, to]` from the stored closes/FX (D6, D20). `from` for `max` = first
+ * close. `to` is the space as-of date: the series ends with the terminal point (D23) = the total.
+ * The SAME function serves `summary` (headline) and `history` (chart).
+ */
 export function computeHistory(
   positions: readonly SpacePositionData[],
   closes: readonly CloseRow[],
@@ -294,27 +385,52 @@ export function computeHistory(
     to,
     referenceCurrency: REFERENCE_CURRENCY,
     toleranceDays: HISTORY_TOLERANCE_DAYS,
+    fxToleranceDays: fxOptions.fxToleranceDays,
+    terminal: terminalOf(positions, fxRows, to, fxOptions.fxToleranceDays),
   });
   return { series, from, currentFx: current };
 }
 
+/**
+ * Wire headline. `change` is the difference of the two ROUNDED wire amounts (each rounded once,
+ * half-even), so `endValue - startValue = change` and `total - change = startValue` hold exactly
+ * on what the client sees; `changePct` is rounded once from the full-precision values.
+ */
 export function headlineToWire(h: Headline | null): DashboardHeadline | null {
-  return h === null
-    ? null
-    : {
-        fromDate: h.fromDate,
-        baseDate: h.baseDate,
-        toDate: h.toDate,
-        startValue: eur(h.startValue),
-        endValue: eur(h.endValue),
-        change: eur(h.change),
-        changePct: wire(h.changePct),
-      };
+  if (h === null) return null;
+  const start = h.startValue.toDecimalPlaces(WIRE_SCALE);
+  const end = h.endValue.toDecimalPlaces(WIRE_SCALE);
+  return {
+    fromDate: h.fromDate,
+    baseDate: h.baseDate,
+    toDate: h.toDate,
+    startValue: eur(start),
+    endValue: eur(end),
+    change: eur(end.minus(start)),
+    changePct: wire(h.changePct),
+  };
 }
 
-function appliedRate(currency: string, rate: Decimal, rateDate: PlainDate): AppliedFxRate {
+/**
+ * `summary.change` (D23): the headline of the series ONLY when it describes the value of `total`,
+ * i.e. the total is complete, so the terminal point (same positions, same prices, same rates)
+ * ends the series and `endValue = total`. A partial total values a subset of the positions the
+ * series counts: a delta of another set is never shown (`null`). The real `toDate` is always
+ * carried, so an older end can never be read as current.
+ */
+export function summaryChange(value: CurrentValue, series: ValueSeries | undefined) {
+  return value.isComplete && value.heldCount > 0 ? headlineToWire(series?.headline ?? null) : null;
+}
+
+function appliedRate(
+  currency: string,
+  rate: Decimal,
+  rateDate: PlainDate,
+  quoted: ReadonlyMap<string, string[]>,
+): AppliedFxRate {
   return {
     currency,
+    quotedCurrencies: quoted.get(currency) ?? [],
     ratePerEur: decimalToString(rate) as string,
     eurPerUnit: wire(eurPerUnit(currency, new Map([[currency, rate]]))) as string,
     rateDate,
@@ -325,20 +441,37 @@ export function historyToWire(
   positions: readonly SpacePositionData[],
   result: HistoryResult | null,
   period: Period,
-  asOf: PlainDate | null,
+  seriesEnd: PlainDate | null,
   fxMode: FxMode,
+  now: Date,
+  fxToleranceDays: number,
 ): Omit<DashboardHistoryOutput, 'basis' | 'label'> {
   const names = positionNames(positions);
   const series = result?.series;
-  // `current` mode repeats one rate on every date: report that rate's REAL date, not the series date.
-  const currentDates = new Map((result?.currentFx ?? []).map((r) => [r.currency, r.date]));
+  const today = utcToday(now);
+  const isOld = (date: PlainDate, days: number) => diffDays(date, today) > days;
+  const quoted = quotedCurrencies(positions);
+  // `current` mode: one rate per currency, with its REAL date; the points carry no rates.
   const currentFxRates =
     fxMode === 'current'
       ? (result?.currentFx ?? []).flatMap((r) => {
           const rate = parseDecimal(r.ratePerEur);
-          return rate ? [appliedRate(r.currency, rate, r.date)] : [];
+          return rate
+            ? [
+                {
+                  ...appliedRate(r.currency, rate, r.date, quoted),
+                  isStale: isOld(r.date, fxToleranceDays),
+                },
+              ]
+            : [];
         })
       : null;
+  const endRates =
+    currentFxRates ??
+    (series?.points.at(-1)?.fx ?? []).map((f) => ({
+      ...f,
+      isStale: isOld(f.date, fxToleranceDays),
+    }));
   return {
     period,
     currency: REFERENCE_CURRENCY,
@@ -350,9 +483,10 @@ export function historyToWire(
       value: wire(p.value),
       evolutionPct: wire(p.evolutionPct),
       dataDate: p.dataDate,
-      fxRates: p.fx.map((f) =>
-        appliedRate(f.currency, f.rate, currentDates.get(f.currency) ?? f.date),
-      ),
+      fxRates:
+        fxMode === 'current'
+          ? []
+          : p.fx.map((f) => appliedRate(f.currency, f.rate, f.date, quoted)),
     })),
     totalPoints: series?.totalPoints ?? 0,
     headline: headlineToWire(series?.headline ?? null),
@@ -362,7 +496,9 @@ export function historyToWire(
       name: names.get(x.positionId) ?? '',
       reason: x.reason,
     })),
-    asOf,
+    seriesEnd,
+    isStale:
+      (seriesEnd !== null && isOld(seriesEnd, STALE_AFTER_DAYS)) || endRates.some((r) => r.isStale),
   };
 }
 

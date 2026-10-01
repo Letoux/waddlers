@@ -42,8 +42,13 @@ export function isPlainDate(value: string): boolean {
   return parse(value) !== null;
 }
 
+// Bounded memo of the dates already seen: series code validates the same few thousand dates
+// once per close (hundreds of thousands of calls for `max`). Pure function, so caching is safe.
+const MEMO_LIMIT = 20_000;
+const dayNumbers = new Map<string, number>();
+
 export function assertPlainDate(value: string): PlainDate {
-  mustParse(value);
+  dayNumber(value);
   return value;
 }
 
@@ -54,6 +59,16 @@ function format(y: number, m: number, d: number): PlainDate {
 /** Days since 1970-01-01 (proleptic Gregorian). */
 function toDayNumber({ y, m, d }: DateParts): number {
   return Date.UTC(y, m - 1, d) / 86_400_000;
+}
+
+/** Day number of a valid plain date (for hot loops that compare many dates; throws on invalid input). */
+export function dayNumber(date: PlainDate): number {
+  const known = dayNumbers.get(date);
+  if (known !== undefined) return known;
+  const n = toDayNumber(mustParse(date));
+  if (dayNumbers.size >= MEMO_LIMIT) dayNumbers.clear();
+  dayNumbers.set(date, n);
+  return n;
 }
 
 function fromDayNumber(n: number): PlainDate {

@@ -62,9 +62,18 @@ export function cleanSeries(series: readonly PricePoint[]): { date: PlainDate; c
     }
     byDate.set(p.date, close);
   }
-  return [...byDate.entries()]
-    .map(([date, close]) => ({ date, close }))
-    .sort((a, b) => compareDates(a.date, b.date));
+  const cleaned = [...byDate.entries()].map(([date, close]) => ({ date, close }));
+  // Stored series come ordered by date: sort only when they are not (one linear check).
+  for (let i = 1; i < cleaned.length; i += 1) {
+    if (
+      compareDates(
+        (cleaned[i - 1] as { date: PlainDate }).date,
+        (cleaned[i] as { date: PlainDate }).date,
+      ) > 0
+    )
+      return cleaned.sort((a, b) => compareDates(a.date, b.date));
+  }
+  return cleaned;
 }
 
 /** Latest close on or before `date` within the tolerance, or null. */

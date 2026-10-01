@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createUser, disableUser } from '../admin';
 import { getDb } from '../db/client';
@@ -10,6 +10,10 @@ import {
   resetAuthTables,
   useTestEnv,
 } from '../../test/auth-harness';
+import { DashboardLimiter } from '../dashboard/limiter';
+import { recomputeListingMetrics } from '../market-data/metrics';
+import { recordSuccess, upsertBars, upsertFxRates } from '../market-data/repository';
+import { testConfig } from '../../test/market-fixtures';
 import { allContractPaths, CLASSIFICATION } from '../../test/procedure-classification';
 import { createPositionRow, createSpaceRow, ensureReferenceData } from '../../test/space-fixtures';
 
@@ -36,6 +40,9 @@ interface Fixture {
   /** A position that belongs to space B only. */
   posB: string;
   missingSpace: string;
+  /** Identity of space B's own instrument (distinct from every instrument of space A). */
+  msft: { instrumentId: string; listingId: string };
+  posCw8: string;
 }
 
 interface ProcedureSpec {
@@ -108,7 +115,10 @@ const STATUS: Record<Exclude<Outcome, 'ok'>, number> = {
   UNAUTHORIZED: 401,
 };
 
-const { rpc, loginAs } = createApp();
+// Generous dashboard cap: the matrix fires many calls as one user (the cap has its own tests).
+const { rpc, loginAs } = createApp({
+  dashboardLimiter: new DashboardLimiter({ maxConcurrent: 50, ratePerMinute: 100_000 }),
+});
 const cookies = {} as Record<Actor, string | undefined>;
 let fx: Fixture;
 
@@ -154,9 +164,94 @@ beforeEach(async () => {
     posA: await createPositionRow(spaceA, ref.ai, '10'),
     posB: await createPositionRow(spaceB, ref.msft, '7'),
     missingSpace: crypto.randomUUID(),
+    msft: ref.msft,
+    posCw8: await createPositionRow(spaceA, ref.cw8, '3'),
   };
-  await createPositionRow(spaceA, ref.cw8, '3');
+  await seedMarketData(ref);
 });
+
+const NOW = new Date('2026-09-30T12:00:00Z');
+
+/**
+ * Market data for every instrument, so the dashboard procedures return real content (positions,
+ * series, movers) in the ok cases: A holds AI and CW8 (1240 EUR), B holds MSFT only (7 x 250 USD / 1.25).
+ */
+async function seedMarketData(ref: Awaited<ReturnType<typeof ensureReferenceData>>) {
+  const db = getDb();
+  const bars: [string, { id: string; currency: string }, [string, string][]][] = [
+    [
+      'ai',
+      { id: ref.ai.listingId, currency: 'EUR' },
+      [
+        ['2026-08-25', '88'],
+        ['2026-09-01', '90'],
+        ['2026-09-30', '100'],
+      ],
+    ],
+    [
+      'cw8',
+      { id: ref.cw8.listingId, currency: 'EUR' },
+      [
+        ['2026-08-25', '68'],
+        ['2026-09-01', '70'],
+        ['2026-09-30', '80'],
+      ],
+    ],
+    [
+      'msft',
+      { id: ref.msft.listingId, currency: 'USD' },
+      [
+        ['2026-08-25', '190'],
+        ['2026-09-01', '200'],
+        ['2026-09-30', '250'],
+      ],
+    ],
+  ];
+  for (const [, listing, rows] of bars) {
+    await upsertBars(
+      db,
+      listing,
+      rows.map(([date, close]) => ({ date, close, adjClose: null })),
+      { source: 'fake', fetchedAt: NOW },
+    );
+    await recordSuccess(db, listing.id, 'history', NOW, { historyCompleteFrom: '2026-08-25' });
+  }
+  await upsertFxRates(
+    db,
+    ['2026-09-01', '2026-09-30'].map((date) => ({ date, currency: 'USD', ratePerEur: '1.25' })),
+    { source: 'fake', fetchedAt: NOW },
+  );
+  await recomputeListingMetrics(db, { now: NOW, config: testConfig });
+}
+
+/** Every `positionId` anywhere in a response body. */
+function positionIdsIn(value: unknown, out: string[] = []): string[] {
+  if (Array.isArray(value)) value.forEach((v) => positionIdsIn(v, out));
+  else if (typeof value === 'object' && value !== null) {
+    for (const [key, v] of Object.entries(value)) {
+      if (key === 'positionId' && typeof v === 'string') out.push(v);
+      else positionIdsIn(v, out);
+    }
+  }
+  return out;
+}
+
+/** An ok dashboard answer for `spaceId` may only mention positions of that space. */
+async function expectOnlyPositionsOf(res: Awaited<ReturnType<typeof call>>, spaceId: string) {
+  const ids = positionIdsIn(res.json);
+  if (ids.length === 0) return;
+  const owned = await getDb()
+    .select({ id: spacePositions.id })
+    .from(spacePositions)
+    .where(inArray(spacePositions.id, ids));
+  const inSpace = await getDb()
+    .select({ id: spacePositions.id })
+    .from(spacePositions)
+    .where(eq(spacePositions.spaceId, spaceId));
+  const allowed = new Set(inSpace.map((r) => r.id));
+  expect(owned.every((r) => allowed.has(r.id))).toBe(true);
+  expect(ids.every((id) => allowed.has(id))).toBe(true);
+}
 
 async function snapshot() {
   const rows = await getDb().select().from(spacePositions);
@@ -201,8 +296,10 @@ describe.each(PROCEDURES)('IDOR matrix: $path', (spec) => {
   it.each(ACTORS)('%s on space A', async (actor) => {
     const before = await snapshot();
     const outcome = expectedOnSpaceA(actor, spec);
-    expectOutcome(await call(spec, actor, fx.spaceA, fx.posA), outcome);
+    const res = await call(spec, actor, fx.spaceA, fx.posA);
+    expectOutcome(res, outcome);
     if (outcome !== 'ok') expect(await snapshot()).toBe(before);
+    else if (spec.path.startsWith('dashboard.')) await expectOnlyPositionsOf(res, fx.spaceA);
   });
 
   it('a nonexistent spaceId is NOT_FOUND for a valid, privileged caller', async () => {
@@ -221,8 +318,10 @@ describe.each(PROCEDURES)('IDOR matrix: $path', (spec) => {
   it("someone else's space (member of B only) is NOT_FOUND, not FORBIDDEN", async () => {
     // 'other' owns space B; space A is not theirs.
     expectOutcome(await call(spec, 'memberOfAnotherSpace', fx.spaceA, fx.posA), 'NOT_FOUND');
-    // ...but their own space works.
-    expectOutcome(await call(spec, 'memberOfAnotherSpace', fx.spaceB, fx.posB), 'ok');
+    // ...but their own space works, and only mentions their own positions.
+    const own = await call(spec, 'memberOfAnotherSpace', fx.spaceB, fx.posB);
+    expectOutcome(own, 'ok');
+    if (spec.path.startsWith('dashboard.')) await expectOnlyPositionsOf(own, fx.spaceB);
   });
 
   it.each(['not-a-uuid', '', "'; drop table spaces; --", '00000000-0000-0000-0000-000000000000'])(
@@ -267,6 +366,51 @@ describe.each(PROCEDURES)('IDOR matrix: $path', (spec) => {
       expectOutcome(await call(spec, 'owner', fx.spaceA, crypto.randomUUID()), 'NOT_FOUND');
     });
   }
+});
+
+describe.each(PROCEDURES.filter((p) => p.path.startsWith('dashboard.')))(
+  'dashboard isolation and validation: $path',
+  (spec) => {
+    const bogus = (spaceId: string) => ({ spaceId, period: 'bogus' });
+
+    it('a garbage period: NOT_FOUND for a non-member (access first), BAD_REQUEST for a viewer', async () => {
+      const nonMember = await call(spec, 'nonMember', fx.spaceA, fx.posA, bogus(fx.spaceA));
+      expect(nonMember.json.code).toBe('NOT_FOUND');
+      expect(nonMember.status).toBe(404);
+      const viewer = await call(spec, 'viewer', fx.spaceA, fx.posA, bogus(fx.spaceA));
+      expect(viewer.json.code).toBe('BAD_REQUEST');
+      expect(viewer.status).toBe(400);
+      // A member of another space does not learn anything either.
+      const other = await call(spec, 'memberOfAnotherSpace', fx.spaceA, fx.posA, bogus(fx.spaceA));
+      expect(other.json.code).toBe('NOT_FOUND');
+    });
+
+    it("space B's own instrument never appears in space A's answer, and vice versa", async () => {
+      const a = JSON.stringify((await call(spec, 'owner', fx.spaceA, fx.posA)).json);
+      const b = JSON.stringify((await call(spec, 'memberOfAnotherSpace', fx.spaceB, fx.posB)).json);
+      for (const leak of [fx.msft.instrumentId, fx.msft.listingId, fx.posB, 'Microsoft', 'MSFT']) {
+        expect(a, `A leaks ${leak}`).not.toContain(leak);
+      }
+      for (const leak of [fx.posA, fx.posCw8, 'Air Liquide', 'World ETF']) {
+        expect(b, `B leaks ${leak}`).not.toContain(leak);
+      }
+      // The answers really hold each space's own content (the check above is not vacuous).
+      const movers = spec.path === 'dashboard.movers';
+      expect(a).toContain(movers ? 'Air Liquide' : '1240');
+      expect(b).toContain(movers ? 'Microsoft' : '1400');
+    });
+  },
+);
+
+describe('dashboard totals are per space (distinct instruments and values)', () => {
+  it('summary of A = 1240 EUR (AI 10 x 100 + CW8 3 x 80), of B = 1400 EUR (MSFT 7 x 250 / 1.25)', async () => {
+    const spec = PROCEDURES.find((p) => p.path === 'dashboard.summary')!;
+    const total = async (actor: Actor, spaceId: string) =>
+      ((await call(spec, actor, spaceId, fx.posA)).json as unknown as { total: { amount: string } })
+        .total.amount;
+    expect(await total('owner', fx.spaceA)).toBe('1240');
+    expect(await total('memberOfAnotherSpace', fx.spaceB)).toBe('1400');
+  });
 });
 
 describe('spaces.list (user-scoped, not space-scoped)', () => {

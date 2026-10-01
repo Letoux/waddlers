@@ -59,7 +59,13 @@ export const invalidPositionSchema = namedPositionSchema.extend({
   reason: z.literal('quantity_invalid'),
 });
 
-/** Period headline: first vs last COMPLETE point of the value series (D20). */
+/**
+ * Period headline: first vs last COMPLETE point of the value series (D20).
+ * D23: in `dashboard.summary` it describes the SAME value as `total` (`endValue` = `total`,
+ * `toDate` = the as-of date) or is `null`; `change` = `endValue` - `startValue` exactly, in the
+ * rounded wire amounts. Always use the real `toDate` in the label (never call it "current" when
+ * `toDate` is before the as-of date).
+ */
 export const dashboardHeadlineSchema = z.object({
   /** Timeline date of the first complete point (may be after the period target). */
   fromDate: plainDate,
@@ -75,8 +81,8 @@ export const dashboardHeadlineSchema = z.object({
 export type DashboardHeadline = z.infer<typeof dashboardHeadlineSchema>;
 
 export const dashboardFreshnessSchema = z.object({
-  /** Oldest end-price date among the valued positions; `null` when nothing is valued. */
-  asOf: plainDate.nullable(),
+  /** Oldest end-price date among the valued positions; `null` when nothing is valued. (Formerly `asOf`.) */
+  oldestPriceDate: plainDate.nullable(),
   /** Oldest FX rate date used; `null` when no conversion was needed. */
   fxAsOf: plainDate.nullable(),
   /** True when any input is older than the stale threshold (see BACKEND.md). Never "realtime". */
@@ -96,13 +102,25 @@ export const dashboardSummaryOutputSchema = z.object({
   heldCount: z.number().int().min(0),
   valuedCount: z.number().int().min(0),
   watchlistCount: z.number().int().min(0),
-  /** Derived from the same series as `dashboard.history`; `null` with fewer than two complete points. */
+  /**
+   * D23: derived from the same series as `dashboard.history` (FX always historical), whose last
+   * point is the current total. `null` when fewer than two complete points, or when the total is
+   * partial (the valued set differs from the series': never a delta for another set).
+   */
   change: dashboardHeadlineSchema.nullable(),
   leadingMissing: z.array(namedPositionSchema),
   invalidPositions: z.array(invalidPositionSchema),
   freshness: dashboardFreshnessSchema,
   /** Rates used for the total, ECB convention: `1 EUR = ratePerEur <currency>`. */
-  fxRates: z.array(z.object({ currency: z.string(), ratePerEur: decimalString, date: plainDate })),
+  fxRates: z.array(
+    z.object({
+      currency: z.string(),
+      ratePerEur: decimalString,
+      date: plainDate,
+      /** Raw currencies the valued positions are quoted in for this rate, sorted: a GBP rate for a GBX listing is `['GBX']`. */
+      quotedCurrencies: z.array(z.string()),
+    }),
+  ),
 });
 export type DashboardSummaryOutput = z.infer<typeof dashboardSummaryOutputSchema>;
 
@@ -113,12 +131,25 @@ export const appliedFxRateSchema = z.object({
   /** Major currency (a GBX position is reported with its GBP rate; the UI notes the minor unit). */
   currency: z.string(),
   ratePerEur: decimalString,
+  /**
+   * Raw currencies (minor units included, sorted) of the held positions this rate serves: a GBP
+   * rate used for a GBX listing gives `['GBX']`, for both `['GBP', 'GBX']`. Show the pence note
+   * only when it contains a minor unit.
+   */
+  quotedCurrencies: z.array(z.string()),
   /** EUR per 1 unit of the currency (specs 34: "USD/EUR : 0,85"), 8 decimals. Display only. */
   eurPerUnit: decimalString,
   /** Date of the stored rate actually applied (historical: forward-filled; current: the latest rate's date). */
   rateDate: plainDate,
 });
 export type AppliedFxRate = z.infer<typeof appliedFxRateSchema>;
+
+/** `history.currentFxRates` entry: the applied rate plus its staleness versus now. */
+export const currentFxRateSchema = appliedFxRateSchema.extend({
+  /** True when `rateDate` is older than 7 days versus the current UTC date. */
+  isStale: z.boolean(),
+});
+export type CurrentFxRate = z.infer<typeof currentFxRateSchema>;
 
 export const dashboardHistoryPointSchema = z.object({
   date: plainDate,
@@ -128,7 +159,10 @@ export const dashboardHistoryPointSchema = z.object({
   evolutionPct: decimalString.nullable(),
   /** Most recent actual close date behind the value; null on gap days. */
   dataDate: plainDate.nullable(),
-  /** Tooltip rates: one per non-EUR currency held on that day (empty for an all-EUR space). */
+  /**
+   * `historical` mode only: tooltip rates, one per non-EUR currency held on that day (empty for
+   * an all-EUR space). Always empty in `current` mode: read `currentFxRates` (one rate, with its date).
+   */
   fxRates: z.array(appliedFxRateSchema),
 });
 
@@ -144,7 +178,7 @@ export const dashboardHistoryOutputSchema = z.object({
   /** "au taux de change actuel" in `current` mode, `null` in `historical` mode. */
   fxLabel: z.literal(DASHBOARD_FX_CURRENT_LABEL).nullable(),
   /** `current` mode only: the latest rate per currency used for every point (with its date); else `null`. */
-  currentFxRates: z.array(appliedFxRateSchema).nullable(),
+  currentFxRates: z.array(currentFxRateSchema).nullable(),
   /** At most 400 points, first and last always kept. */
   points: z.array(dashboardHistoryPointSchema),
   /** Points of the trimmed series before downsampling. */
@@ -153,8 +187,10 @@ export const dashboardHistoryOutputSchema = z.object({
   /** Positions without data at the period start: "pas de donnée avant la création de X" (D20). */
   leadingMissing: z.array(namedPositionSchema),
   invalidPositions: z.array(invalidPositionSchema),
-  /** Exchange-local date of the newest end price behind the series; null when there is no data. */
-  asOf: plainDate.nullable(),
+  /** Exchange-local date of the newest end price, the nominal end of the series (D23); null when there is no data. (Formerly `asOf`.) */
+  seriesEnd: plainDate.nullable(),
+  /** True when `seriesEnd` is older than 5 days or an FX rate applied at the end is older than 7 days, versus the current UTC date. Never "realtime". */
+  isStale: z.boolean(),
 });
 export type DashboardHistoryOutput = z.infer<typeof dashboardHistoryOutputSchema>;
 

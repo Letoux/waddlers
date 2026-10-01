@@ -197,7 +197,7 @@ export type SetQuantityInput = z.infer<typeof setQuantityInputSchema>;
 
 export const removePositionInputSchema = z.object({ spaceId: z.uuid(), positionId: z.uuid() });
 
-/** Typed 429 for login/changePassword; also sent as a `Retry-After` header. */
+/** Typed 429 for login/changePassword and dashboard.summary/history; also sent as a `Retry-After` header. */
 export const tooManyRequestsError = {
   status: 429,
   message: 'Too many attempts',
@@ -207,7 +207,8 @@ export const tooManyRequestsError = {
 /**
  * Error codes the UI must handle:
  * - UNAUTHORIZED: bad credentials (login) or no/expired session (everything else);
- * - TOO_MANY_REQUESTS: login/changePassword throttled (retry later);
+ * - TOO_MANY_REQUESTS: login/changePassword throttled, or dashboard.summary/history over the per-user
+ *   concurrency/rate cap (retry after `data.retryAfterSeconds`);
  * - INVALID_CURRENT_PASSWORD: changePassword with a wrong current password (session stays valid);
  * - BAD_REQUEST: input failed validation (never render `message`/`issues` raw);
  * - NOT_FOUND: space-scoped procedures, for a space the caller cannot access AND for a space or
@@ -256,9 +257,15 @@ export const contract = {
    */
   dashboard: {
     /** Current value (partial total + `missing`, D5), period change, freshness. */
-    summary: oc.input(dashboardInputSchema).output(dashboardSummaryOutputSchema),
+    summary: oc
+      .input(dashboardInputSchema)
+      .output(dashboardSummaryOutputSchema)
+      .errors({ TOO_MANY_REQUESTS: tooManyRequestsError }),
     /** Value series of the CURRENT positions (D6/D20), at most 400 points; `fxMode` (D22) defaults to `historical`. */
-    history: oc.input(dashboardHistoryInputSchema).output(dashboardHistoryOutputSchema),
+    history: oc
+      .input(dashboardHistoryInputSchema)
+      .output(dashboardHistoryOutputSchema)
+      .errors({ TOO_MANY_REQUESTS: tooManyRequestsError }),
     /** Top 5 gainers and losers by period performance (local currency, D4). */
     movers: oc.input(dashboardInputSchema).output(dashboardMoversOutputSchema),
   },

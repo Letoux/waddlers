@@ -1,6 +1,14 @@
 import postgres from 'postgres';
 
 export const DEFAULT_APP_ROLE = 'waddlers_app';
+/**
+ * Per-role limits of the web app (security F1, S5): a statement that runs longer is cancelled and a
+ * transaction left idle is terminated, so a slow or abandoned request cannot hold a pool
+ * connection indefinitely. Set with `ALTER ROLE ... SET`: they apply to every NEW session of the
+ * app role only (the owner/migration and worker roles are untouched: backfills may run long).
+ */
+export const APP_STATEMENT_TIMEOUT = '10s';
+export const APP_IDLE_IN_TRANSACTION_TIMEOUT = '30s';
 
 const ROLE_NAME = /^[a-z_][a-z0-9_]{0,62}$/;
 // URL-safe so the password can be embedded in DATABASE_URL without percent-encoding.
@@ -11,7 +19,7 @@ const URL_SAFE_PASSWORD = /^[A-Za-z0-9._~-]{16,128}$/;
  * creates/updates a login role for the web app with DML only (SELECT/INSERT/UPDATE/DELETE on
  * public tables, sequence usage) and no DDL, no TRUNCATE, no access to the `drizzle` migrations
  * schema. Default privileges make tables created by later migrations (run by the owner)
- * accessible automatically. A compromised web process (SQL injection, RCE) can therefore not
+ * accessible automatically. It also sets `statement_timeout` / `idle_in_transaction_session_timeout` on the role. A compromised web process (SQL injection, RCE) can therefore not
  * alter the schema or migration history.
  */
 export async function setupAppRole(
@@ -34,6 +42,8 @@ export async function setupAppRole(
           then format('alter role %I with login nosuperuser nocreatedb nocreaterole password %L', ${role}::text, ${options.password}::text)
           else format('create role %I with login nosuperuser nocreatedb nocreaterole password %L', ${role}::text, ${options.password}::text)
         end,
+        format('alter role %I set statement_timeout = %L', ${role}::text, ${APP_STATEMENT_TIMEOUT}::text),
+        format('alter role %I set idle_in_transaction_session_timeout = %L', ${role}::text, ${APP_IDLE_IN_TRANSACTION_TIMEOUT}::text),
         format('grant connect on database %I to %I', current_database(), ${role}::text),
         'revoke create on schema public from public',
         format('revoke create on schema public from %I', ${role}::text),

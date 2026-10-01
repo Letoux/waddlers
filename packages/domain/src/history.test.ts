@@ -790,3 +790,264 @@ describe('buildValueSeries (D6)', () => {
     expect(full.leadingMissing).toEqual([]);
   });
 });
+
+describe('fxToleranceDays (D22: FX forward-fill shorter than the close tolerance)', () => {
+  const args = (to: string, extra: { fxToleranceDays?: number } = {}) => ({
+    positions: [
+      position('us', '1', 'USD', [
+        ['2026-06-01', '100'],
+        [to, '100'],
+      ]),
+    ],
+    fx: fxOf({ USD: [['2026-06-01', '2']] }),
+    from: '2026-06-01',
+    to,
+    toleranceDays: 10,
+    ...extra,
+  });
+
+  it('FX 7 days old is used, 8 days old is not (boundary), while closes keep their 10 days', () => {
+    const at7 = buildValueSeries(args('2026-06-08', { fxToleranceDays: 7 }));
+    expect(vals(at7).at(-1)).toEqual(['2026-06-08', '50']);
+    expect(at7.points.at(-1)?.fx[0]?.date).toBe('2026-06-01');
+    const at8 = buildValueSeries(args('2026-06-09', { fxToleranceDays: 7 }));
+    expect(vals(at8)).toEqual([['2026-06-01', '50']]); // 06-09: no rate -> trailing null trimmed
+  });
+
+  it('defaults to toleranceDays, and is validated like it', () => {
+    expect(vals(buildValueSeries(args('2026-06-11'))).at(-1)).toEqual(['2026-06-11', '50']);
+    expect(() => buildValueSeries(args('2026-06-11', { fxToleranceDays: -1 }))).toThrow(RangeError);
+    expect(() => buildValueSeries(args('2026-06-11', { fxToleranceDays: 1.5 }))).toThrow(
+      RangeError,
+    );
+  });
+});
+
+describe('terminal point (D23)', () => {
+  const pos = [
+    position('fr', '10', 'EUR', [
+      ['2026-06-01', '100'],
+      ['2026-06-02', '110'],
+    ]),
+    position('us', '5', 'USD', [
+      ['2026-06-01', '200'],
+      ['2026-06-02', '220'],
+    ]),
+  ];
+  const fx = fxOf({
+    USD: [
+      ['2026-06-01', '2'],
+      ['2026-06-02', '2'],
+    ],
+  });
+  const base = { positions: pos, fx, from: '2026-06-01', to: '2026-06-03' };
+  const end = (price: string | null, currency = 'EUR', date: string | null = '2026-06-03') => ({
+    price: price === null ? null : D(price),
+    currency,
+    date,
+  });
+  const terminal = (
+    over: Partial<{
+      fr: ReturnType<typeof end>;
+      us: ReturnType<typeof end>;
+      usdRate: boolean;
+    }> = {},
+  ) => ({
+    date: '2026-06-03',
+    prices: new Map([
+      ['fr', over.fr ?? end('120')],
+      ['us', over.us ?? end('240', 'USD')],
+    ]),
+    rates: new Map(
+      over.usdRate === false ? [] : [['USD', { rate: D('2'), date: '2026-06-03' }] as const],
+    ),
+  });
+
+  it('appends a complete terminal point at `to` built from the end prices (same total function)', () => {
+    const r = buildValueSeries({ ...base, terminal: terminal() });
+    // start 1000 + 5x200/2 = 1500; end 1200 + 5x240/2 = 1800 (a date with no close at all)
+    expect(vals(r)).toEqual([
+      ['2026-06-01', '1500'],
+      ['2026-06-02', '1650'],
+      ['2026-06-03', '1800'],
+    ]);
+    expect(r.headline?.toDate).toBe('2026-06-03');
+    expect(r.headline?.endValue.toFixed()).toBe('1800');
+    expect(r.headline?.startValue.plus(r.headline?.change ?? 0).toFixed()).toBe('1800');
+    expect(r.points.at(-1)?.dataDate).toBe('2026-06-03');
+    expect(r.points.at(-1)?.fx.map((f) => [f.currency, f.rate.toFixed(), f.date])).toEqual([
+      ['USD', '2', '2026-06-03'],
+    ]);
+  });
+
+  it('replaces the closes-based point of the same date (the end price wins, it is the total)', () => {
+    const withClose = buildValueSeries({
+      ...base,
+      positions: [
+        position('fr', '10', 'EUR', [
+          ['2026-06-01', '100'],
+          ['2026-06-03', '111'],
+        ]),
+        pos[1]!,
+      ],
+      terminal: terminal(),
+    });
+    expect(vals(withClose).at(-1)).toEqual(['2026-06-03', '1800']);
+    expect(withClose.points.filter((p) => p.date === '2026-06-03')).toHaveLength(1);
+  });
+
+  it.each([
+    ['an end price is missing', { fr: end(null) }],
+    ['an end price is not positive', { us: end('0', 'USD') }],
+    ['the rate is missing', { usdRate: false }],
+  ])(
+    'is ignored when %s: the series keeps its real last date, never a partial terminal',
+    (_n, over) => {
+      const r = buildValueSeries({ ...base, terminal: terminal(over) });
+      expect(vals(r).at(-1)).toEqual(['2026-06-02', '1650']); // a close-based day, real date
+      expect(r.points.at(-1)?.dataDate).toBe('2026-06-02');
+      expect(r.headline?.toDate).toBe('2026-06-02');
+    },
+  );
+
+  it('keeps a trailing gap honest: a suspended listing trims the tail without a terminal', () => {
+    const suspended = [
+      position('fr', '10', 'EUR', [
+        ['2026-06-01', '100'],
+        ['2026-06-05', '100'],
+        ['2026-06-30', '100'],
+      ]),
+      position('us', '5', 'USD', [
+        ['2026-06-01', '200'],
+        ['2026-06-05', '200'],
+      ]),
+    ];
+    const r = buildValueSeries({
+      positions: suspended,
+      fx: fxOf({
+        USD: [
+          ['2026-06-01', '2'],
+          ['2026-06-30', '2'],
+        ],
+      }),
+      from: '2026-06-01',
+      to: '2026-06-30',
+      toleranceDays: 10,
+    });
+    expect(r.headline?.toDate).toBe('2026-06-05'); // the real end (06-30 is trimmed), not `to`
+    expect(r.points.map((p) => p.date)).toEqual(['2026-06-01', '2026-06-05']);
+  });
+
+  it('with a complete terminal the series ends at `to` with the total, even though the tail closes are trimmed', () => {
+    const suspended = [
+      position('fr', '10', 'EUR', [
+        ['2026-06-01', '100'],
+        ['2026-06-05', '100'],
+        ['2026-06-30', '100'],
+      ]),
+      position('us', '5', 'USD', [
+        ['2026-06-01', '200'],
+        ['2026-06-05', '200'],
+      ]),
+    ];
+    const r = buildValueSeries({
+      positions: suspended,
+      fx: fxOf({
+        USD: [
+          ['2026-06-01', '2'],
+          ['2026-06-30', '2'],
+        ],
+      }),
+      from: '2026-06-01',
+      to: '2026-06-30',
+      toleranceDays: 10,
+      terminal: {
+        date: '2026-06-30',
+        prices: new Map([
+          ['fr', end('100', 'EUR', '2026-06-30')],
+          ['us', end('200', 'USD', '2026-06-01')],
+        ]),
+        rates: new Map([['USD', { rate: D('2'), date: '2026-06-30' }]]),
+      },
+    });
+    expect(r.headline?.toDate).toBe('2026-06-30');
+    expect(r.points.map((p) => p.date)).toEqual(['2026-06-01', '2026-06-05', '2026-06-30']);
+    expect(r.points.at(-1)?.dataDate).toBe('2026-06-30');
+    expect(r.points.at(-1)?.value?.toFixed()).toBe('1500');
+  });
+
+  it('ignores a terminal outside [from, to]', () => {
+    const r = buildValueSeries({ ...base, terminal: { ...terminal(), date: '2026-06-04' } });
+    expect(vals(r).at(-1)).toEqual(['2026-06-02', '1650']);
+  });
+});
+
+describe('two-phase series: downsampling equivalence with gaps, trims and an FX-only hole', () => {
+  it('kept points equal the full series when the series has mid gaps, a leading/trailing trim and an FX hole', () => {
+    const dates: string[] = [];
+    for (let d = '2024-01-01'; d <= '2026-06-30'; d = addDays(d, 1)) dates.push(d);
+    const inRange = (d: string, a: string, b: string) => d >= a && d <= b;
+    const rows = (base: number, keep: (d: string) => boolean): [string, string][] =>
+      dates
+        .filter(keep)
+        .map((d, i): [string, string] => [d, (base + ((i * 11) % 17) + i / 500).toFixed(3)]);
+    const input = (maxPoints: number) => ({
+      positions: [
+        // starts late: the leading days are trimmed (D20)
+        position(
+          'late',
+          '4',
+          'EUR',
+          rows(40, (d) => d >= '2024-03-01'),
+        ),
+        // holes of 12+ days (> 10 tolerance): mid-series gaps, then data again
+        position(
+          'holes',
+          '2',
+          'USD',
+          rows(
+            90,
+            (d) =>
+              !inRange(d, '2024-09-01', '2024-09-20') && !inRange(d, '2025-04-01', '2025-04-15'),
+          ),
+        ),
+        // stops early: the trailing days are trimmed
+        position(
+          'stops',
+          '7',
+          'GBX',
+          rows(1200, (d) => d <= '2026-05-01'),
+        ),
+      ],
+      fx: fxOf({
+        // FX-only hole: USD rates missing 2025-11-01..2025-11-20 (closes are all there)
+        USD: dates
+          .filter((d) => !inRange(d, '2025-11-01', '2025-11-20'))
+          .map((d, i): [string, string] => [d, (1.05 + (i % 40) / 400).toFixed(4)]),
+        GBP: dates.map((d, i): [string, string] => [d, (0.8 + (i % 25) / 300).toFixed(4)]),
+      }),
+      from: '2024-01-01',
+      to: '2026-06-30',
+      maxPoints,
+    });
+    const full = buildValueSeries(input(100_000));
+    const small = buildValueSeries(input(50));
+    expect(full.points.some((p) => p.value === null)).toBe(true); // real mid gaps
+    expect(full.leadingMissing).toEqual(['late']);
+    expect(full.points[0]?.date && full.points[0].date >= '2024-03-01').toBe(true); // trimmed start
+    expect(full.points.at(-1)?.date && full.points.at(-1)!.date <= '2026-05-11').toBe(true); // tail trimmed 10 days after 05-01
+    expect(small.points).toHaveLength(50);
+    expect(small.totalPoints).toBe(full.totalPoints);
+    const byDate = new Map(full.points.map((p) => [p.date, p]));
+    for (const p of small.points) {
+      const f = byDate.get(p.date)!;
+      expect(p.value?.toFixed() ?? null).toBe(f.value?.toFixed() ?? null);
+      expect(p.evolutionPct?.toFixed() ?? null).toBe(f.evolutionPct?.toFixed() ?? null);
+      expect(p.dataDate).toBe(f.dataDate);
+      expect(p.missing).toEqual(f.missing);
+    }
+    expect(small.headline?.change.toFixed()).toBe(full.headline?.change.toFixed());
+    expect(small.points[0]?.date).toBe(full.points[0]?.date);
+    expect(small.points.at(-1)?.date).toBe(full.points.at(-1)?.date);
+  });
+});

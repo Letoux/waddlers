@@ -2,6 +2,12 @@ import { implement, ORPCError } from '@orpc/server';
 import { contract } from '@waddlers/contracts';
 import { sql } from 'drizzle-orm';
 import type { SpaceRole } from '@waddlers/contracts';
+import {
+  DASHBOARD_MAX_CONCURRENT,
+  DASHBOARD_RATE_PER_MINUTE,
+  DashboardLimiter,
+  retryAfterSeconds,
+} from './dashboard/limiter';
 import { getHistory, getMovers, getSummary, type DashboardDeps } from './dashboard/service';
 import { FX_TOLERANCE_DAYS } from './market-data/config';
 import { requireSpaceAccess } from './spaces/access';
@@ -76,6 +82,8 @@ export interface RouterDeps {
   getDb?: AuthDeps['getDb'];
   loginLimiter?: LoginRateLimiter;
   passwordLimiter?: LoginRateLimiter;
+  /** Per-user admission of dashboard.summary/history (concurrency + rate). Injectable for tests. */
+  dashboardLimiter?: DashboardLimiter;
   clientIp?: AuthDeps['clientIp'];
   authSecret?: AuthDeps['authSecret'];
   /** Test seam: replaces the cookie-to-session lookup. Production always uses the database. */
@@ -89,6 +97,10 @@ export function createRouter({
   getDb: getDatabase = getDb,
   loginLimiter = new LoginRateLimiter(),
   passwordLimiter = new LoginRateLimiter(),
+  dashboardLimiter = new DashboardLimiter({
+    maxConcurrent: DASHBOARD_MAX_CONCURRENT,
+    ratePerMinute: DASHBOARD_RATE_PER_MINUTE,
+  }),
   clientIp = (headers) => clientIpFrom(headers, getEnv().TRUSTED_PROXY_HEADER),
   authSecret = () => getEnv().AUTH_SECRET,
   authenticate: resolveAuth,
@@ -139,6 +151,30 @@ export function createRouter({
     fxToleranceDays: FX_TOLERANCE_DAYS,
   };
 
+  /**
+   * Admission for the CPU-heavy dashboard procedures, per authenticated user. Runs after the space
+   * access check (an inaccessible space still answers NOT_FOUND, never 429) and holds its slot for
+   * the whole call, compute included.
+   */
+  const admitted = async <T>(
+    userId: string,
+    ctx: RpcContext,
+    errors: { TOO_MANY_REQUESTS: (options: { data: { retryAfterSeconds: number } }) => Error },
+    run: () => Promise<T>,
+  ): Promise<T> => {
+    const admission = dashboardLimiter.acquire(userId);
+    if (!admission.allowed) {
+      const seconds = retryAfterSeconds(admission.retryAfterMs);
+      ctx.resHeaders?.set('retry-after', String(seconds));
+      throw errors.TOO_MANY_REQUESTS({ data: { retryAfterSeconds: seconds } });
+    }
+    try {
+      return await run();
+    } finally {
+      admission.release();
+    }
+  };
+
   let lastDbLog = 0;
 
   return os.router({
@@ -186,11 +222,15 @@ export function createRouter({
       ),
     },
     dashboard: {
-      summary: spaceScoped('viewer').dashboard.summary.handler(({ context, input }) =>
-        getSummary(deps.getDb(), context.space, input.period, dashboardDeps),
+      summary: spaceScoped('viewer').dashboard.summary.handler(({ context, input, errors }) =>
+        admitted(context.session.user.id, context, errors, () =>
+          getSummary(deps.getDb(), context.space, input.period, dashboardDeps),
+        ),
       ),
-      history: spaceScoped('viewer').dashboard.history.handler(({ context, input }) =>
-        getHistory(deps.getDb(), context.space, input.period, input.fxMode, dashboardDeps),
+      history: spaceScoped('viewer').dashboard.history.handler(({ context, input, errors }) =>
+        admitted(context.session.user.id, context, errors, () =>
+          getHistory(deps.getDb(), context.space, input.period, input.fxMode, dashboardDeps),
+        ),
       ),
       movers: spaceScoped('viewer').dashboard.movers.handler(({ context, input }) =>
         getMovers(deps.getDb(), context.space, input.period),

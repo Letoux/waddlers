@@ -15,6 +15,7 @@ export {
   addDays,
   addMonths,
   diffDays,
+  dayNumber,
   compareDates,
   isPlainDate,
   assertPlainDate,
@@ -64,5 +65,6 @@ export {
   type Headline,
   type ValueSeries,
   type ValueSeriesInput,
+  type TerminalInput,
 } from './history';
 export { DEFAULT_MOVERS_LIMIT, computeMovers, type MoverInput, type Movers } from './movers';

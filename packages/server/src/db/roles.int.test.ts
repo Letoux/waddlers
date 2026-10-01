@@ -34,6 +34,16 @@ describe('DML-only application role', () => {
     expect(row).toEqual({ rolsuper: false, rolcreaterole: false, rolcreatedb: false });
   });
 
+  it('has a statement timeout and an idle-in-transaction timeout (applied to new sessions)', async () => {
+    const [row] = await app`show statement_timeout`;
+    expect(row).toEqual({ statement_timeout: '10s' });
+    const [idle] = await app`show idle_in_transaction_session_timeout`;
+    expect(idle).toEqual({ idle_in_transaction_session_timeout: '30s' });
+    // The owner session is not limited (migrations and backfills may run long).
+    const [ownerRow] = await owner`show statement_timeout`;
+    expect(ownerRow).toEqual({ statement_timeout: '0' });
+  });
+
   it('can read and write application tables', async () => {
     await app`delete from users where username = 'roles-it'`;
     await app`insert into users (username, password_hash) values ('roles-it', 'x')`;

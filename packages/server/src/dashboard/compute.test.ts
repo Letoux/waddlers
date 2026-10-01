@@ -75,8 +75,8 @@ describe('computeCurrentValue', () => {
     expect(v.missing).toEqual([]);
     expect([v.heldCount, v.valuedCount, v.watchlistCount]).toEqual([3, 3, 0]);
     expect(v.fxRates).toEqual([
-      { currency: 'GBP', ratePerEur: '0.85', date: '2026-09-30' },
-      { currency: 'USD', ratePerEur: '1.25', date: '2026-09-30' },
+      { currency: 'GBP', ratePerEur: '0.85', date: '2026-09-30', quotedCurrencies: ['GBX'] },
+      { currency: 'USD', ratePerEur: '1.25', date: '2026-09-30', quotedCurrencies: ['USD'] },
     ]);
   });
 
@@ -99,7 +99,7 @@ describe('computeCurrentValue', () => {
     const v = computeCurrentValue([pos('new', 'Newco', '3', 'EUR', null)], [], NOW, 7);
     expect(v.total).toEqual({ amount: null, currency: 'EUR' });
     expect(v.isComplete).toBe(false);
-    expect(v.freshness.asOf).toBeNull();
+    expect(v.freshness.oldestPriceDate).toBeNull();
   });
 
   it('an empty space has a null total, is complete and has no freshness', () => {
@@ -107,7 +107,7 @@ describe('computeCurrentValue', () => {
     expect(v.total.amount).toBeNull();
     expect(v.isComplete).toBe(true);
     expect([v.heldCount, v.valuedCount, v.watchlistCount]).toEqual([0, 0, 0]);
-    expect(v.freshness).toMatchObject({ asOf: null, fxAsOf: null, isStale: false });
+    expect(v.freshness).toMatchObject({ oldestPriceDate: null, fxAsOf: null, isStale: false });
   });
 
   it('excludes watchlist entries (null quantity) from the value without calling them missing', () => {
@@ -143,10 +143,10 @@ describe('computeCurrentValue', () => {
     expect(v.freshness.fxAsOf).toBe('2026-09-28');
   });
 
-  it('flags a stale price (older than 5 days) with asOf = the oldest input date', () => {
+  it('flags a stale price (older than 5 days) with oldestPriceDate = the oldest input date', () => {
     const stale = pos('old', 'Old Corp', '1', 'EUR', '50', '2026-09-20');
     const v = computeCurrentValue([ai, stale], [], NOW, 7);
-    expect(v.freshness.asOf).toBe('2026-09-20');
+    expect(v.freshness.oldestPriceDate).toBe('2026-09-20');
     expect(v.freshness.isStale).toBe(true);
     expect(v.freshness.stalePositions).toEqual([
       { positionId: 'old', name: 'Old Corp', asOf: '2026-09-20' },
@@ -155,14 +155,29 @@ describe('computeCurrentValue', () => {
     expect(v.total.amount).toBe('1050');
   });
 
-  it('a weekend-old close is not stale; a stale FX rate is flagged on its own', () => {
-    const friday = pos('fri', 'Friday', '1', 'EUR', '10', '2026-09-26');
-    expect(computeCurrentValue([friday], [], NOW, 7).freshness.isStale).toBe(false);
-    const usd = pos('u', 'Usd', '1', 'USD', '10', '2026-09-30');
-    const later = new Date('2026-10-02T12:00:00Z');
-    const v = computeCurrentValue([usd], [fx('USD', '1.25', '2026-09-24')], later, 7);
-    expect(v.freshness.staleFx).toEqual([{ currency: 'USD', date: '2026-09-24' }]);
-    expect(v.freshness.isStale).toBe(true);
+  // 2026-09-30 is a Wednesday: Friday 09-25 is 5 days old (weekend + nothing), Thursday 09-24 is 6.
+  it.each([
+    ['2026-09-25', false],
+    ['2026-09-24', true],
+  ])(
+    'a price dated %s is stale: %s (5-day boundary, versus the current UTC date)',
+    (date, stale) => {
+      const p = pos('p', 'Price', '1', 'EUR', '10', date);
+      expect(computeCurrentValue([p], [], NOW, 7).freshness.isStale).toBe(stale);
+    },
+  );
+
+  it.each([
+    ['2026-09-23', false], // 7 days before NOW
+    ['2026-09-22', true], // 8 days before NOW
+  ])('an FX rate dated %s is stale: %s (7-day boundary), flagged on its own', (date, stale) => {
+    // Fresh price (Friday 09-25, 5 days old), rate used within 7 days of the as-of date.
+    const usd = pos('u', 'Usd', '1', 'USD', '10', '2026-09-25');
+    const v = computeCurrentValue([usd], [fx('USD', '1.25', date)], NOW, 7);
+    expect(v.missing).toEqual([]);
+    expect(v.freshness.stalePositions).toEqual([]);
+    expect(v.freshness.staleFx).toEqual(stale ? [{ currency: 'USD', date }] : []);
+    expect(v.freshness.isStale).toBe(stale);
   });
 
   it('a watchlist entry in a foreign currency needs no FX and does not appear in fxRates', () => {
@@ -198,6 +213,8 @@ describe('computeHistory', () => {
   it('each period starts at its target (or the first close for max), headline = series endpoints', () => {
     const closes = weekdayCloses('l-ai', '2020-01-01', '2026-09-30');
     const byDate = new Map(closes.map((c) => [c.date, c.close]));
+    // The end price (D21) of the listing equals its last close: the terminal point (D23) coincides.
+    const held = pos('ai', 'Air Liquide', '10', 'EUR', byDate.get('2026-09-30') ?? null);
     const expectedFrom: Record<Period, string> = {
       '1w': '2026-09-23',
       '1m': '2026-08-30',

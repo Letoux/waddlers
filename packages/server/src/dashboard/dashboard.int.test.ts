@@ -16,10 +16,15 @@ import { requireSpaceAccess } from '../spaces/access';
 import { createApp, PASSWORD, releaseTestEnv, useTestEnv } from '../../test/auth-harness';
 import { resetMarketTables, testConfig } from '../../test/market-fixtures';
 import { createPositionRow, createSpaceRow, ensureReferenceData } from '../../test/space-fixtures';
+import { DashboardLimiter } from './limiter';
 import { readHeldCloses } from './repository';
 
 const NOW = new Date('2026-09-30T12:00:00Z');
-const { rpc, loginAs } = createApp({ now: () => NOW });
+// Generous cap: this file fires many calls as one user (the cap itself: dashboard-limits.int.test.ts).
+const { rpc, loginAs } = createApp({
+  now: () => NOW,
+  dashboardLimiter: new DashboardLimiter({ maxConcurrent: 50, ratePerMinute: 100_000 }),
+});
 
 let ref: Awaited<ReturnType<typeof ensureReferenceData>>;
 let userId: string;
@@ -53,7 +58,8 @@ async function seedBars(listingId: string, currency: string, bars: Bars, complet
 const seedFx = (rates: { currency: string; ratePerEur: string }[]) =>
   upsertFxRates(
     getDb(),
-    ['2026-08-28', '2026-09-15', '2026-09-30'].flatMap((date) =>
+    // 09-23 = the 1w start: the previous rate (09-15) is 8 days old, beyond the 7-day FX tolerance.
+    ['2026-08-28', '2026-09-15', '2026-09-23', '2026-09-30'].flatMap((date) =>
       rates.map((r) => ({ date, ...r })),
     ),
     { source: 'fake', fetchedAt: NOW },
@@ -142,7 +148,11 @@ describe('dashboard.summary', () => {
     });
     const h = await history(spaceId, '1m');
     expect(s.change).toEqual(h.headline);
-    expect(s.freshness).toMatchObject({ asOf: '2026-09-30', isStale: false, stalePositions: [] });
+    expect(s.freshness).toMatchObject({
+      oldestPriceDate: '2026-09-30',
+      isStale: false,
+      stalePositions: [],
+    });
     expect(s.fxRates.map((r) => r.currency)).toEqual(['GBP', 'USD']);
   });
 
@@ -195,7 +205,7 @@ describe('dashboard.summary', () => {
     await recompute();
     const s = await summary(spaceId, '1w');
     expect(s.total.amount).toBe('104');
-    expect(s.freshness.asOf).toBe('2026-09-20');
+    expect(s.freshness.oldestPriceDate).toBe('2026-09-20');
     expect(s.freshness.isStale).toBe(true);
     expect(s.freshness.stalePositions).toEqual([
       expect.objectContaining({ name: 'Air Liquide', asOf: '2026-09-20' }),
@@ -220,7 +230,7 @@ describe('dashboard.history', () => {
     expect(h.basis).toBe('current_quantities_past_prices');
     expect(h.label).toBe('valeur des positions actuelles');
     expect(h.currency).toBe('EUR');
-    expect(h.asOf).toBe('2026-09-30');
+    expect(h.seriesEnd).toBe('2026-09-30');
     expect(
       h.points.map((p) => ({
         date: p.date,
@@ -335,16 +345,52 @@ describe('dashboard.history FX modes (D22)', () => {
     expect(h.points.map((p) => p.fxRates)).toEqual([
       [
         // Point 08-30 forward-fills the 08-28 rates; GBX is reported with its GBP rate.
-        { currency: 'GBP', ratePerEur: '0.8', eurPerUnit: '1.25', rateDate: '2026-08-28' },
-        { currency: 'USD', ratePerEur: '1.25', eurPerUnit: '0.8', rateDate: '2026-08-28' },
+        {
+          currency: 'GBP',
+          quotedCurrencies: ['GBX'],
+          ratePerEur: '0.8',
+          eurPerUnit: '1.25',
+          rateDate: '2026-08-28',
+        },
+        {
+          currency: 'USD',
+          quotedCurrencies: ['USD'],
+          ratePerEur: '1.25',
+          eurPerUnit: '0.8',
+          rateDate: '2026-08-28',
+        },
       ],
       [
-        { currency: 'GBP', ratePerEur: '0.8', eurPerUnit: '1.25', rateDate: '2026-09-15' },
-        { currency: 'USD', ratePerEur: '1.25', eurPerUnit: '0.8', rateDate: '2026-09-15' },
+        {
+          currency: 'GBP',
+          quotedCurrencies: ['GBX'],
+          ratePerEur: '0.8',
+          eurPerUnit: '1.25',
+          rateDate: '2026-09-15',
+        },
+        {
+          currency: 'USD',
+          quotedCurrencies: ['USD'],
+          ratePerEur: '1.25',
+          eurPerUnit: '0.8',
+          rateDate: '2026-09-15',
+        },
       ],
       [
-        { currency: 'GBP', ratePerEur: '0.8', eurPerUnit: '1.25', rateDate: '2026-09-30' },
-        { currency: 'USD', ratePerEur: '1.25', eurPerUnit: '0.8', rateDate: '2026-09-30' },
+        {
+          currency: 'GBP',
+          quotedCurrencies: ['GBX'],
+          ratePerEur: '0.8',
+          eurPerUnit: '1.25',
+          rateDate: '2026-09-30',
+        },
+        {
+          currency: 'USD',
+          quotedCurrencies: ['USD'],
+          ratePerEur: '1.25',
+          eurPerUnit: '0.8',
+          rateDate: '2026-09-30',
+        },
       ],
     ]);
     // An explicit historical mode is the same request as the default.
@@ -369,27 +415,41 @@ describe('dashboard.history FX modes (D22)', () => {
     expect(cur.fxMode).toBe('current');
     expect(cur.fxLabel).toBe('au taux de change actuel');
     expect(cur.currentFxRates).toEqual([
-      { currency: 'GBP', ratePerEur: '0.8', eurPerUnit: '1.25', rateDate: '2026-09-30' },
-      { currency: 'USD', ratePerEur: '1.5', eurPerUnit: '0.66666667', rateDate: '2026-09-30' },
+      {
+        currency: 'GBP',
+        quotedCurrencies: ['GBX'],
+        ratePerEur: '0.8',
+        eurPerUnit: '1.25',
+        rateDate: '2026-09-30',
+        isStale: false,
+      },
+      {
+        currency: 'USD',
+        quotedCurrencies: ['USD'],
+        ratePerEur: '1.5',
+        eurPerUnit: '0.66666667',
+        rateDate: '2026-09-30',
+        isStale: false,
+      },
     ]);
     // MSFT at 1.5 on every day: start 900 + 666.67 + 5000, end 1000 + 833.33 + 6250.
     expect(cur.headline).toMatchObject({
       startValue: { amount: '6566.66666667' },
       endValue: { amount: '8083.33333333' },
-      change: { amount: '1516.66666667' },
+      // end - start of the ROUNDED wire amounts: 8083.33333333 - 6566.66666667 (not round(1516.666...)).
+      change: { amount: '1516.66666666' },
       changePct: '23.0964467',
     });
     for (const h of [hist, cur]) {
       expect(h.headline?.startValue.amount).toBe(h.points[0]?.value);
       expect(h.headline?.endValue.amount).toBe(h.points[h.points.length - 1]?.value);
     }
-    // Every current-mode point applies the SAME USD rate and reports its real date.
-    for (const p of cur.points) {
-      expect(p.fxRates.find((f) => f.currency === 'USD')).toMatchObject({
-        ratePerEur: '1.5',
-        rateDate: '2026-09-30',
-      });
-    }
+    // Current mode: the points carry no rates (one rate per currency in `currentFxRates`, dated).
+    expect(cur.points.every((p) => p.fxRates.length === 0)).toBe(true);
+    expect(cur.currentFxRates?.find((f) => f.currency === 'USD')).toMatchObject({
+      ratePerEur: '1.5',
+      rateDate: '2026-09-30',
+    });
     // The summary's current value is unaffected by the mode (latest rate).
     expect((await summary(spaceId, '1m')).total.amount).toBe('8083.33333333');
   });
@@ -440,8 +500,8 @@ describe('dashboard.history FX modes (D22)', () => {
     const { spaceId } = await standardSpace();
     const s = await summary(spaceId);
     expect(s.fxRates).toEqual([
-      { currency: 'GBP', ratePerEur: '0.8', date: '2026-09-30' },
-      { currency: 'USD', ratePerEur: '1.25', date: '2026-09-30' },
+      { currency: 'GBP', ratePerEur: '0.8', date: '2026-09-30', quotedCurrencies: ['GBX'] },
+      { currency: 'USD', ratePerEur: '1.25', date: '2026-09-30', quotedCurrencies: ['USD'] },
     ]);
   });
 });
