@@ -1,3 +1,6 @@
+import type { DashboardPeriod } from '@waddlers/contracts';
+import { PERIOD_PARAM } from '@/lib/dashboard/period';
+
 export type SpaceSection = 'dashboard' | 'titres';
 
 const SPACE_PATH = /^\/s\/([^/]+)(?:\/(titres))?\/?$/;
@@ -18,12 +21,22 @@ export function parseSpacePath(
   }
 }
 
-export function spaceHref(spaceId: string, section: SpaceSection = 'dashboard'): string {
+/** `period` (an already validated `?periode=` value) is carried so the global period survives navigation. */
+export function spaceHref(
+  spaceId: string,
+  section: SpaceSection = 'dashboard',
+  period: DashboardPeriod | null = null,
+): string {
   const base = `/s/${encodeURIComponent(spaceId)}`;
-  return section === 'titres' ? `${base}/titres` : base;
+  const path = section === 'titres' ? `${base}/titres` : base;
+  return period ? `${path}?${PERIOD_PARAM}=${period}` : path;
 }
 
 /** Where to go when switching space: the same sub-page in the new space, else its dashboard. */
-export function switchSpaceHref(pathname: string, newSpaceId: string): string {
-  return spaceHref(newSpaceId, parseSpacePath(pathname)?.section ?? 'dashboard');
+export function switchSpaceHref(
+  pathname: string,
+  newSpaceId: string,
+  period: DashboardPeriod | null = null,
+): string {
+  return spaceHref(newSpaceId, parseSpacePath(pathname)?.section ?? 'dashboard', period);
 }

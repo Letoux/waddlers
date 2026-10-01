@@ -31,6 +31,9 @@ export const AI: ScenarioPosition = { listing: 'AI.XPAR', quantity: '8' };
 export const MC: ScenarioPosition = { listing: 'MC.XPAR', quantity: '3.5' };
 export const MSFT_WATCH: ScenarioPosition = { listing: 'MSFT.XNAS' };
 export const SHEL: ScenarioPosition = { listing: 'SHEL.XLON', quantity: '1234.5' };
+export const MSFT: ScenarioPosition = { listing: 'MSFT.XNAS', quantity: '5' };
+// Never priced in E2E (see global-setup.ts): a held position on it is missing from the total.
+export const CW8_UNPRICED: ScenarioPosition = { listing: 'CW8.XPAR', quantity: '2' };
 export const SAP: ScenarioPosition = { listing: 'SAP.XETR', quantity: '10' };
 
 /**

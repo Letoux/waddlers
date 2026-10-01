@@ -37,4 +37,21 @@ export default async function globalSetup() {
     SEED_USER_PASSWORD: `pw-${randomBytes(12).toString('hex')}`,
     NODE_ENV: 'development',
   });
+  await seedMarketData(root);
+}
+
+/**
+ * Market data for the dashboard scenarios: the fake providers (never the network) fill prices,
+ * history, FX and metrics for the listings the scenarios hold. CW8.XPAR is deliberately NOT
+ * refreshed: a position on it has no price (partial total scenario).
+ */
+export const E2E_PRICED_LISTINGS = ['AI.XPAR', 'MC.XPAR', 'SAP.XETR', 'MSFT.XNAS', 'SHEL.XLON'];
+
+export async function seedMarketData(root: string) {
+  for (const listing of E2E_PRICED_LISTINGS) {
+    await run(root, ['admin', '--', 'market:refresh', listing], undefined, {
+      MARKET_DATA_PROVIDER: 'fake',
+      FX_PROVIDER: 'fake',
+    });
+  }
 }

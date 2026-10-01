@@ -4,7 +4,13 @@ import { shouldRetryQuery } from './query-retry';
 
 describe('shouldRetryQuery', () => {
   it('never retries definitive answers', () => {
-    for (const code of ['NOT_FOUND', 'FORBIDDEN', 'UNAUTHORIZED', 'BAD_REQUEST']) {
+    for (const code of [
+      'NOT_FOUND',
+      'FORBIDDEN',
+      'UNAUTHORIZED',
+      'BAD_REQUEST',
+      'TOO_MANY_REQUESTS',
+    ]) {
       expect(shouldRetryQuery(0, new ORPCError(code))).toBe(false);
     }
   });

@@ -21,6 +21,9 @@
   --muted-foreground: oklch(0.556 0 0);
   --border: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
+  --gain: oklch(0.45 0.13 150);
+  --loss: oklch(0.5 0.19 27);
+  --chart-line: oklch(0.5 0.17 255);
 }
 
 .dark {
@@ -40,6 +43,9 @@
   --muted-foreground: oklch(0.708 0 0);
   --border: oklch(1 0 0 / 10%);
   --ring: oklch(0.556 0 0);
+  --gain: oklch(0.78 0.16 150);
+  --loss: oklch(0.72 0.17 25);
+  --chart-line: oklch(0.76 0.12 255);
 }
 
 @theme inline {
@@ -59,6 +65,9 @@
   --color-muted-foreground: var(--muted-foreground);
   --color-border: var(--border);
   --color-ring: var(--ring);
+  --color-gain: var(--gain);
+  --color-loss: var(--loss);
+  --color-chart-line: var(--chart-line);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);

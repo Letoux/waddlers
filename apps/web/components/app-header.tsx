@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Menu } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { SpacesListOutput } from '@waddlers/contracts';
@@ -23,6 +23,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from '@/components/ui/sheet';
+import { PERIOD_PARAM, parsePeriodParam } from '@/lib/dashboard/period';
 import { parseSpacePath, spaceHref, switchSpaceHref } from '@/lib/spaces/nav';
 import { useSpacesQuery } from '@/lib/spaces/use-spaces';
 import { cn } from '@/lib/utils';
@@ -59,6 +60,8 @@ export function AppHeader({
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  // The global period (specs 11) follows the user across spaces and space pages.
+  const period = parsePeriodParam(useSearchParams().get(PERIOD_PARAM));
   const [menuOpen, setMenuOpen] = useState(false);
   const { data = initialSpaces } = useSpacesQuery({ initialData: initialSpaces });
   const queryClient = useQueryClient();
@@ -86,12 +89,12 @@ export function AppHeader({
     ...(navSpaceId
       ? [
           {
-            href: spaceHref(navSpaceId),
+            href: spaceHref(navSpaceId, 'dashboard', period),
             label: 'Dashboard',
             active: fromPath?.section === 'dashboard',
           },
           {
-            href: spaceHref(navSpaceId, 'titres'),
+            href: spaceHref(navSpaceId, 'titres', period),
             label: 'Titres',
             active: fromPath?.section === 'titres',
           },
@@ -104,7 +107,7 @@ export function AppHeader({
   const switchTo = (spaceId: string) => {
     if (spaceId === selected) return;
     // The destination page records the active space (ActivateSpace); nothing to send here.
-    startTransition(() => router.push(switchSpaceHref(pathname, spaceId)));
+    startTransition(() => router.push(switchSpaceHref(pathname, spaceId, period)));
   };
 
   return (

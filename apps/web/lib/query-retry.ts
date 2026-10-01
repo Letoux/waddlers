@@ -1,9 +1,15 @@
 import { ORPCError } from '@orpc/client';
 
-const DEFINITIVE = new Set(['NOT_FOUND', 'FORBIDDEN', 'UNAUTHORIZED', 'BAD_REQUEST']);
+const DEFINITIVE = new Set([
+  'NOT_FOUND',
+  'FORBIDDEN',
+  'UNAUTHORIZED',
+  'BAD_REQUEST',
+  'TOO_MANY_REQUESTS',
+]);
 
 /**
- * Query retry policy: an answer such as NOT_FOUND (revoked space) or FORBIDDEN will not change
+ * Query retry policy: an answer such as NOT_FOUND (revoked space), FORBIDDEN or TOO_MANY_REQUESTS (an immediate retry would only burn the cap) will not change
  * by asking again, so it is shown at once; transient failures (network, 5xx) get two retries.
  */
 export function shouldRetryQuery(failureCount: number, error: unknown): boolean {
