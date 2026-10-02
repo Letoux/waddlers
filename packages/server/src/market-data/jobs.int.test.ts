@@ -23,6 +23,13 @@ import { createMarketDataRuntime } from './runtime';
 import { startWorker } from './scheduler';
 import { silentLogger } from './types';
 
+// ISOLATION INVARIANT: this file TRUNCATEs the market tables in beforeEach and counts rows, so it
+// must be the only writer of its database. test/integration-setup.ts gives the integration suite
+// its own database (`<DATABASE_URL_TEST db>_int`); Playwright's global setup (db:seed,
+// market:refresh) or another `test:integration` run on the shared `waddlers_test` used to inject
+// rows and locks mid-test (flaky counts, TRUNCATE waits that looked like a hang). All time here
+// comes from TestClock (13:00Z on a weekday, so no time-of-day dependence); the only real-time
+// values are session expiries, compared against the database clock, which is consistent.
 beforeAll(useTestEnv);
 afterAll(releaseTestEnv);
 
