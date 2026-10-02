@@ -386,8 +386,10 @@ test.describe('états et affichage', () => {
     await openTitres(page);
     const table = page.getByRole('table');
     await expect(table).toHaveAttribute('data-density', 'comfortable');
+    const saved = page.waitForResponse((r) => r.url().includes('/tableConfig/save') && r.ok());
     await page.getByRole('button', { name: 'Compacte' }).click();
     await expect(table).toHaveAttribute('data-density', 'compact');
+    await saved; // the config is saved 500 ms after the last edit
     await page.reload();
     await expect(page.getByRole('table')).toHaveAttribute('data-density', 'compact');
 

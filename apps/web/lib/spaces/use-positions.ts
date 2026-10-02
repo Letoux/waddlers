@@ -12,6 +12,10 @@ function useInvalidateSpaceData(spaceId: string) {
     void queryClient.invalidateQueries({
       queryKey: orpc.positions.list.key({ input: { spaceId } }),
     });
+    // Filter choices and counts (S7) follow the positions of the space.
+    void queryClient.invalidateQueries({
+      queryKey: orpc.positions.facets.key({ input: { spaceId } }),
+    });
     void queryClient.invalidateQueries({ queryKey: orpc.spaces.list.key() });
     // Quantities feed the dashboard total and chart.
     void queryClient.invalidateQueries({ queryKey: orpc.dashboard.key() });

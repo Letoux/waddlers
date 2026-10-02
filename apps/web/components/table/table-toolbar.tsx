@@ -1,15 +1,26 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { Search } from 'lucide-react';
-import type { DashboardPeriod } from '@waddlers/contracts';
+import { TABLE_PAGE_SIZES, type DashboardPeriod } from '@waddlers/contracts';
 import { PeriodSelector } from '@/components/dashboard/period-selector';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { POSITIONS_SEARCH_MAX } from '@waddlers/contracts';
 import { countLabel } from '@/lib/table/pagination';
-import type { Density } from '@/lib/table/density';
+import type { Density, PageSize } from '@/lib/table/config-state';
 
-/** Search, period, density and result count (specs 20, 11). The URL owns the values. */
+/**
+ * Search and period (URL), column/filter panels, density and page size (saved config), and the
+ * result count (specs 20, 11, 16, 21).
+ */
 export function TableToolbar({
   search,
   onSearch,
@@ -17,6 +28,9 @@ export function TableToolbar({
   onPeriod,
   density,
   onDensity,
+  pageSize,
+  onPageSize,
+  panels,
   total,
 }: {
   search: string;
@@ -25,6 +39,10 @@ export function TableToolbar({
   onPeriod: (period: DashboardPeriod) => void;
   density: Density;
   onDensity: (density: Density) => void;
+  pageSize: PageSize;
+  onPageSize: (size: PageSize) => void;
+  /** The "Colonnes" and "Filtres" buttons. */
+  panels: ReactNode;
   total: number | null;
 }) {
   return (
@@ -52,6 +70,7 @@ export function TableToolbar({
         </span>
         <PeriodSelector value={period} onChange={onPeriod} />
       </div>
+      <div className="flex gap-2">{panels}</div>
       <div role="group" aria-label="Densité" className="flex gap-1">
         {(
           [
@@ -71,6 +90,18 @@ export function TableToolbar({
           </Button>
         ))}
       </div>
+      <Select value={String(pageSize)} onValueChange={(v) => onPageSize(Number(v) as PageSize)}>
+        <SelectTrigger aria-label="Lignes par page" data-testid="page-size" className="w-32">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {TABLE_PAGE_SIZES.map((size) => (
+            <SelectItem key={size} value={String(size)}>
+              {size} lignes
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
       <p
         className="ml-auto text-sm text-muted-foreground"
         role="status"

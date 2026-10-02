@@ -6,6 +6,7 @@ export function PaginationBar({
   page,
   rows,
   total,
+  pageSize,
   hasMore,
   busy,
   onPage,
@@ -13,6 +14,7 @@ export function PaginationBar({
   page: number;
   rows: number;
   total: number;
+  pageSize: number;
   hasMore: boolean;
   busy: boolean;
   onPage: (page: number) => void;
@@ -20,7 +22,7 @@ export function PaginationBar({
   return (
     <nav aria-label="Pagination" className="flex flex-wrap items-center justify-between gap-2">
       <p className="text-sm text-muted-foreground" data-testid="page-range">
-        {rangeLabel(page, rows, total)}
+        {rangeLabel(page, rows, total, pageSize)}
       </p>
       <div className="flex gap-2">
         <Button

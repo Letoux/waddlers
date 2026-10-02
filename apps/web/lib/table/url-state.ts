@@ -9,6 +9,7 @@ import { POSITIONS_SEARCH_MAX, tableSortSchema, type TableSort } from '@waddlers
 export const SEARCH_PARAM = 'q';
 export const SORT_PARAM = 'tri';
 export const PAGE_PARAM = 'page';
+/** Default page size (the saved config's `pageSize` overrides it). */
 export const PAGE_SIZE = 50;
 /** Far beyond any real space; keeps a hand-written offset small. */
 const MAX_PAGE = 10_000;
@@ -50,7 +51,7 @@ export function parseTableUrlState(params: Params): TableUrlState {
 /** What `positions.list` receives: a blank search is no search. */
 export const searchForApi = (q: string): string | undefined => q.trim() || undefined;
 
-export const pageOffset = (page: number) => (page - 1) * PAGE_SIZE;
+export const pageOffset = (page: number, pageSize: number = PAGE_SIZE) => (page - 1) * pageSize;
 
 /** Click on a sortable header: none -> asc -> desc -> none; another column starts at asc. */
 export function nextSort(current: TableSort | null, columnId: TableSort['columnId']) {

@@ -20,7 +20,7 @@ import { RemovePositionButton } from '@/components/spaces/remove-position-button
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { cellView, columnHeader, isRightAligned, unsortableReason } from '@/lib/table/cells';
 import { isSortable } from '@/lib/table/column-config';
-import type { Density } from '@/lib/table/density';
+import type { Density } from '@/lib/table/config-state';
 import { cn } from '@/lib/utils';
 import { CellContent } from './cell-view';
 
