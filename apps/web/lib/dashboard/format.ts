@@ -41,6 +41,12 @@ const pctSigned = new Intl.NumberFormat('fr-FR', {
 // 5 significant digits whatever the magnitude: USD 0,88070 -> "0,8807", JPY 0,0058412, KRW 0,00067.
 const rate = new Intl.NumberFormat('fr-FR', { maximumSignificantDigits: 5 });
 
+/** Exchange rate with 5 significant digits: "0,8807". */
+export function formatRate(value: string | null | undefined): string {
+  const n = toNumber(value);
+  return n === null ? UNAVAILABLE : rate.format(n);
+}
+
 /** "128 450 €". */
 export function formatEur(amount: string | null | undefined): string {
   const n = toNumber(amount);

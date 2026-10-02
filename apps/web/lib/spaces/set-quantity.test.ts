@@ -4,6 +4,7 @@ import type { PositionsListOutput } from '@waddlers/contracts';
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { FORBIDDEN_MESSAGE, MUTATION_ERROR_MESSAGE } from './errors';
 import { setQuantityMutationOptions, type QuantityVars } from './set-quantity';
+import { listOutput } from './test-fixtures';
 
 const SPACE = '11111111-1111-4111-8111-111111111111';
 const X = '22222222-2222-4222-8222-222222222222';
@@ -25,7 +26,8 @@ function row(id: string, quantity: string | null) {
       currencyMajor: 'EUR',
       minorUnitDivisor: 1,
     },
-  } as PositionsListOutput['rows'][number];
+    values: {},
+  } as unknown as PositionsListOutput['rows'][number];
 }
 
 type Deferred = { resolve: () => void; reject: (e: unknown) => void };
@@ -53,13 +55,7 @@ describe('useSetQuantity state machine (setQuantityMutationOptions)', () => {
 
   beforeEach(() => {
     qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-    qc.setQueryData<PositionsListOutput>(listKey, {
-      rows: [row(X, '1'), row(Y, '7')],
-      total: 2,
-      hasMore: false,
-      period: '1m',
-      asOf: null,
-    });
+    qc.setQueryData<PositionsListOutput>(listKey, listOutput([row(X, '1'), row(Y, '7')]));
     notify = { success: vi.fn<(m: string) => void>(), error: vi.fn<(m: string) => void>() };
     invalidate = vi.fn<() => void>();
     saved = vi.fn<() => void>();

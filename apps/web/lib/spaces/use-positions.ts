@@ -1,15 +1,10 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
 import { orpc } from '@/lib/orpc';
 import { spaceFailureKind, writeFailureMessage } from './errors';
 import { pendingWrites, setQuantityMutationOptions, writeMeta } from './set-quantity';
-
-/** Positions of a space. Always refetched on mount (no stale list after a navigation). */
-export function usePositionsQuery(spaceId: string) {
-  return useQuery(orpc.positions.list.queryOptions({ input: { spaceId }, staleTime: 0 }));
-}
 
 function useInvalidateSpaceData(spaceId: string) {
   const queryClient = useQueryClient();
@@ -18,6 +13,8 @@ function useInvalidateSpaceData(spaceId: string) {
       queryKey: orpc.positions.list.key({ input: { spaceId } }),
     });
     void queryClient.invalidateQueries({ queryKey: orpc.spaces.list.key() });
+    // Quantities feed the dashboard total and chart.
+    void queryClient.invalidateQueries({ queryKey: orpc.dashboard.key() });
   };
 }
 
@@ -35,7 +32,8 @@ export function useSetQuantity(spaceId: string, positionId: string, onSaved?: ()
       queryClient,
       spaceId,
       positionId,
-      listKey: orpc.positions.list.queryKey({ input: { spaceId } }),
+      // Prefix of every `positions.list` entry of the space (any period/search/sort/page).
+      listKey: orpc.positions.list.key({ input: { spaceId } }),
       mutationKey: base.mutationKey ?? [],
       mutationFn: (vars) => orpc.positions.setQuantity.call(vars),
       notify: { success: (m) => toast.success(m), error: (m) => toast.error(m) },

@@ -158,11 +158,10 @@ test.describe('sélection d’un espace', () => {
     await openTitres(page);
     const row = rowFor(page, 'Air Liquide');
     await expect(row.getByTestId('quantity')).toContainText('8');
-    // Read-only details of the row.
-    await expect(row).toContainText('Action');
-    await expect(row).toContainText('AI');
-    await expect(row).toContainText('Euronext Paris');
-    await expect(row).toContainText('EUR');
+    // Read-only details of the row (default columns: name, code, price in EUR).
+    await expect(row.locator('td').first()).toContainText('Air Liquide');
+    await expect(row.locator('td').nth(1)).toHaveText('AI');
+    await expect(row.locator('td').nth(2)).toContainText('€');
 
     await editButton(page, 'Air Liquide').click();
     await expect(editor(page, 'Air Liquide')).toBeFocused();
@@ -401,13 +400,18 @@ test.describe('sélection d’un espace', () => {
     await expect(page.getByText('Lecture seule')).toBeVisible();
   });
 
-  test('the raw currency is shown and never divided (GBX)', async ({ page, scenario }) => {
+  test('a pence-quoted listing (GBX) shows its EUR price, not a raw pence amount', async ({
+    page,
+    scenario,
+  }) => {
     const s = await scenario([{ label: 'A', role: 'owner', positions: [SHEL] }]);
     await s.signIn(page);
     await openTitres(page);
     const shell = rowFor(page, 'Shell');
-    await expect(shell).toContainText('GBX');
     await expect(shell.getByTestId('quantity')).toContainText(`1${GROUP}234,5`);
+    // Cours EUR is converted from pence via the pound (the raw GBX price is the `price` column).
+    await expect(shell.locator('td').nth(2)).toContainText('€');
+    await expect(shell.locator('td').nth(2)).not.toContainText('GBX');
   });
 
   test('at 375px there is no horizontal overflow and the selector is reachable', async ({

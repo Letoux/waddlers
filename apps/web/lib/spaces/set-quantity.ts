@@ -1,5 +1,6 @@
 import type { MutationKey, MutationOptions, QueryClient, QueryKey } from '@tanstack/react-query';
-import type { PositionsListOutput } from '@waddlers/contracts';
+import type { MoneyCell, PositionsListOutput, TableCell } from '@waddlers/contracts';
+import { RECALCULATING_REASON } from '@/lib/table/cells';
 import { spaceFailureKind, writeFailureMessage } from './errors';
 
 export type QuantityVars = { spaceId: string; positionId: string; quantity: string | null };
@@ -27,32 +28,105 @@ export function pendingWrites(queryClient: QueryClient, spaceId: string, positio
   });
 }
 
-// Last quantity known to be stored server-side, per query client and position, while edits of
-// that position are in flight. It is what a failed edit falls back to: with two overlapping
-// edits the "previous" value seen by the second one is the first one's unsaved value.
-const confirmed = new WeakMap<QueryClient, Map<string, string | null>>();
+/**
+ * What a failed edit falls back to, per query client and position, while edits of that position
+ * are in flight: the last quantity known to be stored server-side (with two overlapping edits the
+ * "previous" value seen by the second one is the first one's unsaved value) and the tracked-value
+ * cell each cached page showed before the first edit (`tracked`; emptied once an edit succeeded,
+ * since the value of the confirmed quantity is then unknown until the refetch).
+ */
+type Snapshot = { quantity: string | null; tracked: Map<string, TableCell | undefined> };
+const confirmed = new WeakMap<QueryClient, Map<string, Snapshot>>();
 const confirmedFor = (qc: QueryClient) => {
   let map = confirmed.get(qc);
   if (!map) confirmed.set(qc, (map = new Map()));
   return map;
 };
 
-function rowQuantity(qc: QueryClient, listKey: QueryKey, positionId: string) {
-  const list = qc.getQueryData<PositionsListOutput>(listKey);
-  return list?.rows.find((r) => r.id === positionId)?.quantity;
+/** Valeur suivie of a row being edited: unknown until the refetch. Never computed client-side. */
+const RECALCULATING: MoneyCell = {
+  kind: 'money',
+  amount: null,
+  currency: 'EUR',
+  asOf: null,
+  isStale: false,
+  reason: RECALCULATING_REASON,
+};
+
+type Row = PositionsListOutput['rows'][number];
+const TRACKED = 'tracked_value_eur';
+const entryId = (key: QueryKey) => JSON.stringify(key);
+
+/**
+ * `listKey` is a PREFIX: the table keeps one cache entry per (period, search, sort, page,
+ * columns) of the space, and a row can sit in any of them. Reads and writes go through every
+ * matching entry. The quantity lives in `row.quantity` only.
+ */
+function eachEntry(
+  qc: QueryClient,
+  listKey: QueryKey,
+  fn: (key: QueryKey, data: PositionsListOutput) => PositionsListOutput | void,
+) {
+  for (const [key, data] of qc.getQueriesData<PositionsListOutput>({ queryKey: listKey })) {
+    if (!data) continue;
+    const next = fn(key, data);
+    if (next) qc.setQueryData<PositionsListOutput>(key, next);
+  }
 }
 
-/** Updates one row only; every other row keeps whatever the cache holds now. */
-function setRowQuantity(
+function findRow(qc: QueryClient, listKey: QueryKey, positionId: string): Row | undefined {
+  for (const [, list] of qc.getQueriesData<PositionsListOutput>({ queryKey: listKey })) {
+    const found = list?.rows.find((r) => r.id === positionId);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+const rowQuantity = (qc: QueryClient, listKey: QueryKey, positionId: string) =>
+  findRow(qc, listKey, positionId)?.quantity;
+
+function mapRow(data: PositionsListOutput, positionId: string, fn: (r: Row) => Row) {
+  return { ...data, rows: data.rows.map((r) => (r.id === positionId ? fn(r) : r)) };
+}
+
+function snapshotRow(qc: QueryClient, listKey: QueryKey, positionId: string): Snapshot | undefined {
+  const quantity = rowQuantity(qc, listKey, positionId);
+  if (quantity === undefined) return undefined;
+  const tracked = new Map<string, TableCell | undefined>();
+  eachEntry(qc, listKey, (key, data) => {
+    const row = data.rows.find((r) => r.id === positionId);
+    if (row) tracked.set(entryId(key), row.values[TRACKED]);
+  });
+  return { quantity, tracked };
+}
+
+/** Optimistic edit: the quantity, and the tracked value shown as pending where it is displayed. */
+function applyEdit(
   qc: QueryClient,
   listKey: QueryKey,
   positionId: string,
   quantity: string | null,
 ) {
-  qc.setQueryData<PositionsListOutput>(listKey, (old) =>
-    old
-      ? { ...old, rows: old.rows.map((r) => (r.id === positionId ? { ...r, quantity } : r)) }
-      : old,
+  eachEntry(qc, listKey, (_key, data) =>
+    mapRow(data, positionId, (r) => ({
+      ...r,
+      quantity,
+      values: TRACKED in r.values ? { ...r.values, [TRACKED]: RECALCULATING } : r.values,
+    })),
+  );
+}
+
+/** Rollback: restores BOTH the quantity and (where known) the tracked-value cell. */
+function restoreRow(qc: QueryClient, listKey: QueryKey, positionId: string, snap: Snapshot) {
+  eachEntry(qc, listKey, (key, data) =>
+    mapRow(data, positionId, (r) => {
+      const id = entryId(key);
+      const values =
+        snap.tracked.has(id) && snap.tracked.get(id) !== undefined
+          ? { ...r.values, [TRACKED]: snap.tracked.get(id) as TableCell }
+          : r.values;
+      return { ...r, quantity: snap.quantity, values };
+    }),
   );
 }
 
@@ -90,23 +164,23 @@ export function setQuantityMutationOptions(
       await qc.cancelQueries({ queryKey: listKey });
       const known = confirmedFor(qc);
       if (!known.has(key(vars))) {
-        const current = rowQuantity(qc, listKey, vars.positionId);
-        if (current !== undefined) known.set(key(vars), current);
+        const snap = snapshotRow(qc, listKey, vars.positionId);
+        if (snap) known.set(key(vars), snap);
       }
-      setRowQuantity(qc, listKey, vars.positionId, vars.quantity);
+      applyEdit(qc, listKey, vars.positionId, vars.quantity);
     },
     onError: (error, vars) => {
       const alone = pendingWrites(qc, vars.spaceId, vars.positionId) <= 1;
       const fallback = confirmedFor(qc).get(key(vars));
       if (alone && fallback !== undefined) {
         if (rowQuantity(qc, listKey, vars.positionId) === vars.quantity) {
-          setRowQuantity(qc, listKey, vars.positionId, fallback);
+          restoreRow(qc, listKey, vars.positionId, fallback);
         }
       }
       if (spaceFailureKind(error) !== 'not_found') notify.error(writeFailureMessage(error));
     },
     onSuccess: (_data, vars) => {
-      confirmedFor(qc).set(key(vars), vars.quantity);
+      confirmedFor(qc).set(key(vars), { quantity: vars.quantity, tracked: new Map() });
       notify.success('Quantité mise à jour.');
       deps.onSaved?.();
     },

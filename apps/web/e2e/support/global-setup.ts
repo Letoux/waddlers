@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { assertSafeDatabase } from '../../test-support/safe-database';
+import { seedBulkReferenceData } from './bulk';
 import { findRepoRoot, run } from './cli';
 import { ACCOUNT_KEYS, E2E_DATABASE_URL } from './env';
 
@@ -37,6 +38,7 @@ export default async function globalSetup() {
     SEED_USER_PASSWORD: `pw-${randomBytes(12).toString('hex')}`,
     NODE_ENV: 'development',
   });
+  await seedBulkReferenceData();
   await seedMarketData(root);
 }
 

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { expect, test as base, type Page } from '@playwright/test';
 import { findRepoRoot, run } from './cli';
 import { login } from './accounts';
+import { addAccentPosition, addBulkPositions } from './bulk';
 
 export type Role = 'owner' | 'editor' | 'viewer';
 export type ScenarioPosition = { listing: string; quantity?: string };
@@ -11,6 +12,10 @@ export type ScenarioSpace = {
   /** Role of the scenario user; `null` = the user is not a member. */
   role: Role | null;
   positions: ScenarioPosition[];
+  /** Also holds this many of the 60 unpriced "Bulk NNN" instruments (pagination scenarios). */
+  bulk?: number;
+  /** Also holds "Société Accentuée" (unpriced), for accent-insensitive search. */
+  accent?: boolean;
 };
 
 export type Scenario = {
@@ -59,6 +64,8 @@ async function createScenario(spaces: ScenarioSpace[]): Promise<Scenario> {
         const args = ['position:add', name, p.listing];
         await admin(p.quantity ? [...args, p.quantity] : args);
       }
+      if (space.bulk) await addBulkPositions(spaceId, space.bulk);
+      if (space.accent) await addAccentPosition(spaceId);
     }),
   );
 
