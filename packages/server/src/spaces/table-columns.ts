@@ -42,12 +42,14 @@ export interface ColumnSqlContext {
 }
 
 /**
- * `value` = the column's comparable value (display and, in S7, filters); `sort` = the key `ORDER BY`
+ * `value` = the column's comparable value (display and the S7 filters); `sort` = the key `ORDER BY`
  * uses when it differs (text is lowercased, the instrument type sorts by its French label).
  */
 export interface ColumnSql {
   value: Sql;
   sort?: Sql;
+  /** What an `in` filter compares to when it is not `value` (the exchange is filtered by MIC, displayed by name). */
+  filter?: Sql;
 }
 
 /** French labels of the instrument types: the sort key of `instrument_type` (Action before ETF). */
@@ -67,7 +69,7 @@ export function columnSql(ctx: ColumnSqlContext): Record<AvailableColumnId, Colu
     name: { value: instruments.name, sort: nameKey },
     symbol: { value: listings.symbol, sort: lowered(listings.symbol) },
     instrument_type: { value: instruments.type, sort: typeLabelKey },
-    exchange: { value: exchanges.name, sort: lowered(exchanges.name) },
+    exchange: { value: exchanges.name, sort: lowered(exchanges.name), filter: exchanges.mic },
     selection_reason: {
       value: spacePositions.selectionReason,
       sort: lowered(spacePositions.selectionReason),

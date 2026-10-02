@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { tableColumnIdSchema, tableSortSchema } from './columns';
 import { dashboardPeriodSchema } from './dashboard';
+import { filtersSchema } from './filters';
 
 /**
  * `positions.list` table additions (S6). Numbers are plain decimal strings (never floats);
@@ -92,7 +93,7 @@ export const positionsSearchSchema = z
   .max(POSITIONS_SEARCH_MAX)
   .refine((s) => !s.includes('\u0000'), 'Recherche invalide.');
 
-/** Optional fields of `positions.list` added by S6 (all additive). */
+/** Optional fields of `positions.list` added by S6 and S7 (all additive). */
 export const positionsTableInputFields = {
   /** Drives `perf_period`. Default `1m` (the dashboard default). */
   period: dashboardPeriodSchema.optional(),
@@ -102,4 +103,6 @@ export const positionsTableInputFields = {
   sort: tableSortSchema.optional(),
   /** Which `values` to return (default: `DEFAULT_TABLE_COLUMNS`). Pending columns come back null. */
   columns: z.array(tableColumnIdSchema).max(64).optional(),
+  /** S7, specs 21: combined with AND, applied to `rows` and `total` (see `filters.ts`). */
+  filters: filtersSchema.optional(),
 } as const;

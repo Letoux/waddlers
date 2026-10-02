@@ -49,12 +49,21 @@ export interface TableColumnDef {
   cell: ColumnCell;
   unit?: ColumnUnit;
   sortable: boolean;
+  /**
+   * S7 filter family (specs 21): `in` = one of a set of values (enum columns), `between` = numeric
+   * min/max, `false` = not filterable. The `pending_s8` fundamentals are `false` on purpose: a
+   * filter on a value that is always "—" would silently hide every row, so it is refused (BAD_REQUEST)
+   * until S8 stores the data and flips the flag.
+   */
+  filterable: 'in' | 'between' | false;
   availability: 'available' | 'pending_s8';
 }
 
 const col = <const T extends TableColumnDef>(def: T): T => def;
-const pending = { availability: 'pending_s8', sortable: false } as const;
-const ok = { availability: 'available' } as const;
+const pending = { availability: 'pending_s8', sortable: false, filterable: false } as const;
+const ok = { availability: 'available', filterable: false } as const;
+const okIn = { availability: 'available', filterable: 'in' } as const;
+const okBetween = { availability: 'available', filterable: 'between' } as const;
 
 // One column per line: a registry is read as a table.
 // prettier-ignore
@@ -62,17 +71,17 @@ export const TABLE_COLUMNS = [
   // Identification
   col({ id: 'name', label: 'Société', group: 'identification', dataType: 'text', cell: 'text', sortable: true, ...ok }),
   col({ id: 'symbol', label: 'Code', group: 'identification', dataType: 'text', cell: 'text', sortable: true, ...ok }),
-  col({ id: 'instrument_type', label: "Type d'instrument", group: 'identification', dataType: 'enum', cell: 'text', sortable: true, ...ok }),
-  col({ id: 'exchange', label: 'Place de cotation retenue', group: 'identification', dataType: 'text', cell: 'text', sortable: true, ...ok }),
+  col({ id: 'instrument_type', label: "Type d'instrument", group: 'identification', dataType: 'enum', cell: 'text', sortable: true, ...okIn }),
+  col({ id: 'exchange', label: 'Place de cotation retenue', group: 'identification', dataType: 'text', cell: 'text', sortable: true, ...okIn }),
   col({ id: 'selection_reason', label: 'Logique de choix de la place', group: 'identification', dataType: 'text', cell: 'text', sortable: true, ...ok }),
-  col({ id: 'currency', label: 'Devise', group: 'identification', dataType: 'enum', cell: 'text', sortable: true, ...ok }),
-  col({ id: 'sector', label: "Secteur d'activité", shortLabel: 'Secteur', group: 'identification', dataType: 'text', cell: 'text', sortable: true, ...ok }),
+  col({ id: 'currency', label: 'Devise', group: 'identification', dataType: 'enum', cell: 'text', sortable: true, ...okIn }),
+  col({ id: 'sector', label: "Secteur d'activité", shortLabel: 'Secteur', group: 'identification', dataType: 'text', cell: 'text', sortable: true, ...okIn }),
   // Description
   col({ id: 'description', label: 'Activité & positionnement concurrentiel', shortLabel: 'Activité', group: 'description', dataType: 'text', cell: 'text', sortable: false, ...ok }),
   // Cours. `price` is NOT sortable: it mixes currencies (GBX, USD, EUR); sort `price_eur`.
   col({ id: 'price', label: 'Cours dans la devise locale', shortLabel: 'Cours local', group: 'price', dataType: 'money', cell: 'money', unit: 'listing_currency', sortable: false, ...ok }),
   col({ id: 'fx_rate', label: 'Taux de change → EUR', group: 'price', dataType: 'decimal', cell: 'fx', unit: 'eur_per_unit', sortable: false, ...ok }),
-  col({ id: 'price_eur', label: 'Cours en EUR', shortLabel: 'Cours EUR', group: 'price', dataType: 'money', cell: 'money', unit: 'eur', sortable: true, ...ok }),
+  col({ id: 'price_eur', label: 'Cours en EUR', shortLabel: 'Cours EUR', group: 'price', dataType: 'money', cell: 'money', unit: 'eur', sortable: true, ...okBetween }),
   col({ id: 'price_date', label: 'Date du cours', group: 'price', dataType: 'date', cell: 'date', sortable: true, ...ok }),
   // Valorisation (S8)
   col({ id: 'market_cap', label: 'Capitalisation dans la devise locale', shortLabel: 'Capitalisation locale', group: 'valuation', dataType: 'money', cell: 'money', unit: 'listing_currency', ...pending }),
@@ -89,16 +98,16 @@ export const TABLE_COLUMNS = [
   col({ id: 'dividend_annual', label: 'Dividende annuel', group: 'dividends', dataType: 'money', cell: 'money', unit: 'listing_currency', ...pending }),
   col({ id: 'dividend_yield', label: 'Rendement du dividende', group: 'dividends', dataType: 'percent', cell: 'percent', unit: 'percent', ...pending }),
   // Performance: perf_period resolves to perf_<period> (the global period of the dashboard).
-  col({ id: 'perf_period', label: 'Performance période', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...ok }),
-  col({ id: 'perf_1w', label: 'Performance 1 semaine', shortLabel: 'Perf. 1 sem.', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...ok }),
-  col({ id: 'perf_1m', label: 'Performance 1 mois', shortLabel: 'Perf. 1 mois', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...ok }),
-  col({ id: 'perf_6m', label: 'Performance 6 mois', shortLabel: 'Perf. 6 mois', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...ok }),
-  col({ id: 'perf_1y', label: 'Performance 12 mois', shortLabel: 'Perf. 12 mois', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...ok }),
-  col({ id: 'perf_5y', label: 'Performance 60 mois', shortLabel: 'Perf. 60 mois', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...ok }),
-  col({ id: 'perf_max', label: 'Performance Max', shortLabel: 'Perf. Max', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...ok }),
+  col({ id: 'perf_period', label: 'Performance période', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...okBetween }),
+  col({ id: 'perf_1w', label: 'Performance 1 semaine', shortLabel: 'Perf. 1 sem.', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...okBetween }),
+  col({ id: 'perf_1m', label: 'Performance 1 mois', shortLabel: 'Perf. 1 mois', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...okBetween }),
+  col({ id: 'perf_6m', label: 'Performance 6 mois', shortLabel: 'Perf. 6 mois', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...okBetween }),
+  col({ id: 'perf_1y', label: 'Performance 12 mois', shortLabel: 'Perf. 12 mois', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...okBetween }),
+  col({ id: 'perf_5y', label: 'Performance 60 mois', shortLabel: 'Perf. 60 mois', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...okBetween }),
+  col({ id: 'perf_max', label: 'Performance Max', shortLabel: 'Perf. Max', group: 'performance', dataType: 'percent', cell: 'perf', unit: 'percent', sortable: true, ...okBetween }),
   // Suivi (specs 33): own quantity (editable with positions.setQuantity) and its value in EUR.
   col({ id: 'quantity', label: 'Quantité', group: 'tracking', dataType: 'decimal', cell: 'row', unit: 'quantity', sortable: true, ...ok }),
-  col({ id: 'tracked_value_eur', label: 'Valeur suivie (EUR)', group: 'tracking', dataType: 'money', cell: 'money', unit: 'eur', sortable: true, ...ok }),
+  col({ id: 'tracked_value_eur', label: 'Valeur suivie (EUR)', group: 'tracking', dataType: 'money', cell: 'money', unit: 'eur', sortable: true, ...okBetween }),
 ] as const;
 
 export type TableColumnId = (typeof TABLE_COLUMNS)[number]['id'];
@@ -107,6 +116,12 @@ export type AvailableColumnId = Extract<
   { availability: 'available' }
 >['id'];
 export type SortableColumnId = Extract<(typeof TABLE_COLUMNS)[number], { sortable: true }>['id'];
+export type InFilterColumnId = Extract<(typeof TABLE_COLUMNS)[number], { filterable: 'in' }>['id'];
+export type BetweenFilterColumnId = Extract<
+  (typeof TABLE_COLUMNS)[number],
+  { filterable: 'between' }
+>['id'];
+export type FilterableColumnId = InFilterColumnId | BetweenFilterColumnId;
 
 /** French labels of the instrument types (display and the sort key of `instrument_type`). */
 export const INSTRUMENT_TYPE_LABELS = { stock: 'Action', etf: 'ETF' } as const;
@@ -115,6 +130,13 @@ export const TABLE_COLUMN_IDS = TABLE_COLUMNS.map((c) => c.id) as readonly Table
 export const SORTABLE_COLUMN_IDS = TABLE_COLUMNS.filter((c) => c.sortable).map(
   (c) => c.id,
 ) as readonly SortableColumnId[];
+
+export const IN_FILTER_COLUMN_IDS = TABLE_COLUMNS.filter((c) => c.filterable === 'in').map(
+  (c) => c.id,
+) as readonly InFilterColumnId[];
+export const BETWEEN_FILTER_COLUMN_IDS = TABLE_COLUMNS.filter(
+  (c) => c.filterable === 'between',
+).map((c) => c.id) as readonly BetweenFilterColumnId[];
 
 export const TABLE_COLUMNS_BY_ID: ReadonlyMap<TableColumnId, TableColumnDef> = new Map(
   TABLE_COLUMNS.map((c) => [c.id, c]),

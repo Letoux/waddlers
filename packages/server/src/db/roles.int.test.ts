@@ -53,6 +53,22 @@ describe('DML-only application role', () => {
     await app`delete from users where username = 'roles-it'`;
   });
 
+  it('can read and write table_configs (S7), through its membership FK', async () => {
+    await app`delete from users where username in ('roles-it-cfg')`;
+    await app`delete from spaces where name = 'roles-it-space'`;
+    const [u] =
+      await app`insert into users (username, password_hash) values ('roles-it-cfg', 'x') returning id`;
+    const [sp] = await app`insert into spaces (name) values ('roles-it-space') returning id`;
+    await app`insert into space_members (space_id, user_id, role) values (${sp!.id}, ${u!.id}, 'viewer')`;
+    await app`insert into table_configs (user_id, space_id, version, config)
+      values (${u!.id}, ${sp!.id}, 1, ${app.json({ columns: [] })})`;
+    await app`update table_configs set updated_at = now() where user_id = ${u!.id}`;
+    expect(await app`select 1 from table_configs where user_id = ${u!.id}`).toHaveLength(1);
+    await app`delete from table_configs where user_id = ${u!.id}`;
+    await app`delete from spaces where id = ${sp!.id}`;
+    await app`delete from users where id = ${u!.id}`;
+  });
+
   it('can call unaccent (migration 0006: the table search runs as the app role)', async () => {
     const [row] = await app`select unaccent(lower('Électricité d’Hermès')) as folded`;
     expect(row).toEqual({ folded: "electricite d'hermes" });

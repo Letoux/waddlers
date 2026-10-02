@@ -15,6 +15,7 @@ export {
   type SpacePosition,
   type SpaceRole,
 } from './spaces';
+export { tableConfigs, type TableConfigRow } from './table-configs';
 export {
   priceDaily,
   quoteLatest,

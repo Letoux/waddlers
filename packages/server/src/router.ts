@@ -13,6 +13,8 @@ import {
 import { getHistory, getMovers, getSummary, type DashboardDeps } from './dashboard/service';
 import { FX_TOLERANCE_DAYS } from './market-data/config';
 import { requireSpaceAccess } from './spaces/access';
+import { getTableConfig, resetTableConfig, saveTableConfig } from './spaces/table-config';
+import { getPositionFacets } from './spaces/table-facets';
 import {
   getSpace,
   listSpacePositions,
@@ -237,11 +239,28 @@ export function createRouter({
           { maxConcurrent: POSITIONS_LIST_MAX_CONCURRENT, rated: false },
         ),
       ),
+      // Space-wide choices of the enum filters (S7): every member may read them, like the list itself.
+      facets: spaceScoped('viewer').positions.facets.handler(({ context }) =>
+        getPositionFacets(deps.getDb(), context.space),
+      ),
       setQuantity: spaceScoped('editor').positions.setQuantity.handler(({ context, input }) =>
         setPositionQuantity(deps.getDb(), context.space, input.positionId, input.quantity),
       ),
       remove: spaceScoped('editor').positions.remove.handler(({ context, input }) =>
         removeSpacePosition(deps.getDb(), context.space, input.positionId),
+      ),
+    },
+    // The caller's OWN view of a space (user from the session via context.space.userId, never from input).
+    // viewer+: it is personal config, not shared data, so a read-only member keeps their own table view.
+    tableConfig: {
+      get: spaceScoped('viewer').tableConfig.get.handler(({ context }) =>
+        getTableConfig(deps.getDb(), context.space),
+      ),
+      save: spaceScoped('viewer').tableConfig.save.handler(({ context, input }) =>
+        saveTableConfig(deps.getDb(), context.space, input.config),
+      ),
+      reset: spaceScoped('viewer').tableConfig.reset.handler(({ context }) =>
+        resetTableConfig(deps.getDb(), context.space),
       ),
     },
     dashboard: {

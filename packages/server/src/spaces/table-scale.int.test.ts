@@ -94,6 +94,28 @@ describe(`${POSITIONS}-position space (budget ${BUDGET_MS} ms per page)`, () => 
     ['search symbol (one hit)', { search: 'T1X4242' }],
     ['search ISIN prefix', { search: 'zz0000' }],
     ['search no hit', { search: 'qqqqqq' }],
+    [
+      '3 combined filters (S7): perf_1y range + currency + sector',
+      {
+        filters: [
+          { kind: 'between', columnId: 'perf_1y', min: '10', max: '60' },
+          { kind: 'in', columnId: 'currency', values: ['EUR', 'USD'] },
+          { kind: 'in', columnId: 'sector', values: ['Energie', 'Finance', 'Technologie'] },
+        ],
+      },
+    ],
+    [
+      '3 filters incl. price_eur + search + sort tracked_value_eur',
+      {
+        search: 'societe',
+        sort: { columnId: 'tracked_value_eur', direction: 'desc' },
+        filters: [
+          { kind: 'between', columnId: 'price_eur', min: '20', max: '400' },
+          { kind: 'between', columnId: 'perf_period', min: '0' },
+          { kind: 'in', columnId: 'exchange', values: ['XPAR', 'XNAS'] },
+        ],
+      },
+    ],
     ['all columns, limit 200', { columns: TABLE_COLUMN_IDS, page: { offset: 0, limit: 200 } }],
   ];
 
@@ -103,6 +125,28 @@ describe(`${POSITIONS}-position space (budget ${BUDGET_MS} ms per page)`, () => 
       `[table-scale] ${name}: ${ms.toFixed(0)} ms (total ${out.total}, rows ${out.rows.length})`,
     );
     expect(out.total).toBeLessThanOrEqual(POSITIONS);
+    expect(ms).toBeLessThan(BUDGET_MS);
+  });
+
+  it('filters shrink total and keep it consistent with the rows (deep page)', async () => {
+    const filters = [
+      { kind: 'between', columnId: 'perf_1y', min: '10', max: '60' },
+      { kind: 'in', columnId: 'currency', values: ['EUR', 'USD'] },
+    ];
+    const first = await timed({ filters, page: { offset: 0, limit: 200 } });
+    expect(first.out.total).toBeGreaterThan(100);
+    expect(first.out.total).toBeLessThan(POSITIONS);
+    const last = await timed({ filters, page: { offset: first.out.total - 1, limit: 50 } });
+    expect(last.out.rows).toHaveLength(1);
+    expect(last.out.hasMore).toBe(false);
+  });
+
+  it('positions.facets on a 5 000-position space is fast', async () => {
+    const start = performance.now();
+    const res = await rpc('positions.facets', { spaceId }, { cookie });
+    const ms = performance.now() - start;
+    console.info(`[table-scale] facets: ${ms.toFixed(0)} ms`);
+    expect(res.status).toBe(200);
     expect(ms).toBeLessThan(BUDGET_MS);
   });
 

@@ -61,7 +61,7 @@ Client code may import `contracts` and `domain` only (ESLint boundary rule). Rej
 
 ### Table (server-side, §20–22, §38)
 
-- `positions.list({ spaceId, period, search, sort, page, columns })` → `{ rows, total, hasMore, period, computedAt, oldestComputedAt }` (S6; `filters` join in S7). Built: see `BACKEND.md` "Table (S6)".
+- `positions.list({ spaceId, period, search, sort, page, columns })` → `{ rows, total, hasMore, period, computedAt, oldestComputedAt }` (S6; S7 adds `filters`, plus `positions.facets` and `tableConfig.get|save|reset`). Built: see `BACKEND.md` "Table (S6)".
 - Filters: Zod discriminated union (`between` numeric, `in` enum), `columnId` from a whitelist enum.
 - Column registry split: metadata in `contracts`, SQL mapping in `server`. `perf_period` resolves to `perf_{period}`. NULLS LAST, stable tiebreak, ILIKE + trigram search, offset pagination (limit ≤ 200).
 - Table config v1: ordered `{id, visible}[]`, optional sort/filters/density/pageSize; migrate on read; defaults from §18; reset deletes row.
@@ -154,6 +154,7 @@ Decided by the user on 2026-09-29:
 | D24 | Default table columns | §18 set plus Quantité (editable, §33) and Valeur suivie (EUR); order: Société, Code, Cours EUR, Quantité, Valeur suivie, Capitalisation EUR, Secteur, Rendement du dividende, Performance période, Performance 12 mois, Performance 60 mois (2026-10-01) |
 | D25 | Table vs dashboard consistency | The table's Cours EUR and Valeur suivie use exactly the dashboard's current rule (D21 end price × newest rate in [spaceAsOf − 7 d, spaceAsOf], spaceAsOf = newest end-price date of the space's held positions), full precision before display rounding; Σ Valeur suivie (non-null rows) = dashboard total and null rows = dashboard missing (2026-10-01) |
 | D26 | Local-currency price not sortable | §22 lists "cours" as sortable; sorting raw GBX/USD/EUR amounts is meaningless, so the local price is not sortable and the UI sorts by Cours EUR instead (2026-10-01) |
+| D27 | Persisted table config | Per user+space: ordered visible columns, sort, filters, density, page size; search and period are not persisted (URL); unknown ids dropped on read; reset deletes the row (2026-10-02) |
 
 Non-blocking (can default and revisit):
 

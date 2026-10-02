@@ -1,8 +1,9 @@
+import { defaultTableConfig } from '@waddlers/contracts';
 import { eq, inArray } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createUser, disableUser } from '../admin';
 import { getDb } from '../db/client';
-import { listingMetrics, spacePositions, spaces } from '../db/schema';
+import { listingMetrics, spacePositions, spaces, tableConfigs } from '../db/schema';
 import {
   createApp,
   PASSWORD,
@@ -75,7 +76,37 @@ const PROCEDURES: ProcedureSpec[] = [
       period: '1m',
       sort: { columnId: 'perf_period', direction: 'desc' },
       columns: ['name', 'symbol', 'price_eur', 'tracked_value_eur', 'description'],
+      filters: [
+        { kind: 'between', columnId: 'perf_1y', min: '-100' },
+        { kind: 'in', columnId: 'currency', values: ['EUR', 'USD'] },
+      ],
     }),
+  },
+  {
+    // S7: choices of the enum filters, over the authorized space only.
+    path: 'positions.facets',
+    minRole: 'viewer',
+    takesPosition: false,
+    input: (spaceId) => ({ spaceId }),
+  },
+  // S7: the caller's own table view. viewer+ (personal config, not shared data).
+  {
+    path: 'tableConfig.get',
+    minRole: 'viewer',
+    takesPosition: false,
+    input: (spaceId) => ({ spaceId }),
+  },
+  {
+    path: 'tableConfig.save',
+    minRole: 'viewer',
+    takesPosition: false,
+    input: (spaceId) => ({ spaceId, config: defaultTableConfig() }),
+  },
+  {
+    path: 'tableConfig.reset',
+    minRole: 'viewer',
+    takesPosition: false,
+    input: (spaceId) => ({ spaceId }),
   },
   ...['summary', 'history', 'movers'].map((name): ProcedureSpec => ({
     path: `dashboard.${name}`,
@@ -261,8 +292,11 @@ async function expectOnlyPositionsOf(res: Awaited<ReturnType<typeof call>>, spac
 
 async function snapshot() {
   const rows = await getDb().select().from(spacePositions);
-  return rows
-    .map((r) => `${r.id}|${r.spaceId}|${r.quantity}`)
+  const configs = await getDb().select().from(tableConfigs);
+  return [
+    ...rows.map((r) => `${r.id}|${r.spaceId}|${r.quantity}`),
+    ...configs.map((c) => `cfg|${c.userId}|${c.spaceId}|${JSON.stringify(c.config)}`),
+  ]
     .sort()
     .join('\n');
 }
@@ -347,11 +381,14 @@ describe.each(PROCEDURES)('IDOR matrix: $path', (spec) => {
       extra: true,
     };
     expectOutcome(await call(spec, 'nonMember', fx.spaceA, fx.posA, garbage), 'NOT_FOUND');
-    expectOutcome(
-      await call(spec, 'viewer', fx.spaceA, fx.posA, garbage),
+    const viewer = await call(spec, 'viewer', fx.spaceA, fx.posA, garbage);
+    if (spec.path === 'tableConfig.save') {
+      // The garbage payload has no `config`: past the access check it is a plain validation error.
+      expect(viewer.status).toBe(400);
+    } else {
       // Extra keys are stripped for viewer-level procedures, so the request is valid there.
-      spec.minRole === 'editor' ? 'FORBIDDEN' : 'ok',
-    );
+      expectOutcome(viewer, spec.minRole === 'editor' ? 'FORBIDDEN' : 'ok');
+    }
     expectOutcome(await call(spec, 'anonymous', fx.spaceA, fx.posA, garbage), 'UNAUTHORIZED');
   });
 
@@ -423,6 +460,18 @@ describe('positions.list (table, S6) isolation and validation', () => {
     ['NUL in search', { search: 'a\u0000b' }],
     ['limit over 200', { page: { offset: 0, limit: 201 } }],
     ['unknown requested column', { columns: ['nope'] }],
+    [
+      'filter on a pending column',
+      { filters: [{ kind: 'between', columnId: 'net_debt', min: '1' }] },
+    ],
+    [
+      'filter min > max',
+      { filters: [{ kind: 'between', columnId: 'perf_1y', min: '5', max: '1' }] },
+    ],
+    [
+      'filter on a sql column id',
+      { filters: [{ kind: 'in', columnId: 'name; drop table spaces', values: ['x'] }] },
+    ],
   ])('%s: NOT_FOUND for a non-member (access first), BAD_REQUEST for a viewer', async (_n, bad) => {
     const nonMember = await call(spec, 'nonMember', fx.spaceA, fx.posA, {
       spaceId: fx.spaceA,
@@ -471,6 +520,71 @@ describe('positions.list (table, S6) isolation and validation', () => {
       expect(JSON.stringify(sorted)).not.toContain('Microsoft');
       expect(sorted.rows.map((r) => r.id)).not.toContain(fx.posB);
     }
+  });
+});
+
+describe('table config and facets (S7) isolation', () => {
+  const spec = (path: string) => PROCEDURES.find((p) => p.path === path)!;
+  const cfg = (columnId: string) => ({
+    ...defaultTableConfig(),
+    sort: { columnId, direction: 'asc' },
+  });
+  const read = async (actor: Actor, spaceId: string) =>
+    (await call(spec('tableConfig.get'), actor, spaceId, fx.posA)).json as unknown as {
+      config: { sort?: { columnId: string } };
+      isDefault: boolean;
+    };
+
+  it("a member's saved view is never visible to another member of the same space", async () => {
+    const save = spec('tableConfig.save');
+    const saved = await call(save, 'viewer', fx.spaceA, fx.posA, {
+      spaceId: fx.spaceA,
+      config: cfg('perf_1y'),
+    });
+    expectOutcome(saved, 'ok');
+    expect((await read('viewer', fx.spaceA)).config.sort?.columnId).toBe('perf_1y');
+    for (const other of ['editor', 'owner'] as const) {
+      const seen = await read(other, fx.spaceA);
+      expect(seen.isDefault, other).toBe(true);
+      expect(seen.config.sort).toBeUndefined();
+    }
+    // The other members' reset does not touch the viewer's view.
+    expectOutcome(await call(spec('tableConfig.reset'), 'editor', fx.spaceA, fx.posA), 'ok');
+    expect((await read('viewer', fx.spaceA)).isDefault).toBe(false);
+  });
+
+  it('views are per space: a view in A says nothing about B, and writes through A never reach B', async () => {
+    await call(spec('tableConfig.save'), 'owner', fx.spaceA, fx.posA, {
+      spaceId: fx.spaceA,
+      config: cfg('name'),
+    });
+    expect((await read('owner', fx.spaceA)).isDefault).toBe(false);
+    // 'owner' is not a member of B: NOT_FOUND, and nothing is written there.
+    expectOutcome(await call(spec('tableConfig.get'), 'owner', fx.spaceB, fx.posA), 'NOT_FOUND');
+    expectOutcome(
+      await call(spec('tableConfig.save'), 'owner', fx.spaceB, fx.posA, {
+        spaceId: fx.spaceB,
+        config: cfg('name'),
+      }),
+      'NOT_FOUND',
+    );
+    const rows = await getDb().select().from(tableConfigs);
+    expect(rows.map((r) => r.spaceId)).toEqual([fx.spaceA]);
+    // The other space's own member sees defaults for B.
+    expect((await read('memberOfAnotherSpace', fx.spaceB)).isDefault).toBe(true);
+  });
+
+  it('facets only describe the authorized space', async () => {
+    const facets = async (actor: Actor, spaceId: string) =>
+      JSON.stringify((await call(spec('positions.facets'), actor, spaceId, fx.posA)).json);
+    const a = await facets('owner', fx.spaceA);
+    const b = await facets('memberOfAnotherSpace', fx.spaceB);
+    expect(a).toContain('Euronext Paris');
+    expect(a).not.toContain('USD');
+    expect(a).not.toContain('Nasdaq');
+    expect(b).toContain('Nasdaq');
+    expect(b).not.toContain('Euronext Paris');
+    expect(b).not.toContain('"etf"');
   });
 });
 

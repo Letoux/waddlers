@@ -3,6 +3,7 @@ import {
   DEFAULT_TABLE_COLUMNS,
   POSITIONS_LIST_MAX,
   type DashboardPeriod,
+  type Filter,
   type PositionsListOutput,
   type TablePositionRow as TablePositionRowOut,
   type TableColumnId,
@@ -87,6 +88,7 @@ export interface PositionsTableParams {
   period?: DashboardPeriod | undefined;
   search?: string | undefined;
   sort?: TableSort | undefined;
+  filters?: readonly Filter[] | undefined;
   columns?: readonly TableColumnId[] | undefined;
 }
 
@@ -116,10 +118,11 @@ export async function listSpacePositions(
         limit,
         search,
         sort: params.sort,
+        filters: params.filters,
         period,
         withDescription: columns.includes('description'),
       }),
-      totals: await queryTableTotals(tx, space, search),
+      totals: await queryTableTotals(tx, space, search, params.filters, period),
     }),
     { isolationLevel: 'repeatable read', accessMode: 'read only' },
   );

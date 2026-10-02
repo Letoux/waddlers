@@ -1,13 +1,21 @@
 import {
   DESCRIPTION_PREVIEW_CHARS,
   type DashboardPeriod,
+  type Filter,
   type SortableColumnId,
 } from '@waddlers/contracts';
 import { and, eq, sql, type SQL } from 'drizzle-orm';
 import type { DbExecutor } from '../db/create';
 import { exchanges, instruments, listingMetrics, listings, spacePositions } from '../db/schema';
 import type { AuthorizedSpace } from './access';
-import { columnSql, orderBy, searchPredicate, sectorExpr } from './table-columns';
+import {
+  columnSql,
+  orderBy,
+  searchPredicate,
+  sectorExpr,
+  type ColumnSqlContext,
+} from './table-columns';
+import { filterPredicates } from './table-filters';
 import { currentFxRates, eurRate, priceMajorCurrency } from './table-fx';
 import type { TableRowData } from './table-cells';
 
@@ -23,6 +31,8 @@ export interface TableQuery {
   /** Trimmed, non-empty search text (already validated), or undefined. */
   search: string | undefined;
   sort: { columnId: SortableColumnId; direction: 'asc' | 'desc' } | undefined;
+  /** S7 filters (already validated), AND-combined; undefined/empty = none. */
+  filters?: readonly Filter[] | undefined;
   period: DashboardPeriod;
   /** Descriptions can be long: only selected when the column is requested. */
   withDescription: boolean;
@@ -42,9 +52,15 @@ export interface TablePositionRow {
 const m = listingMetrics;
 const toDate = (v: unknown) => (v === null ? null : new Date(v as string));
 
-function whereClause(space: AuthorizedSpace, search: string | undefined): SQL {
+function whereClause(
+  space: AuthorizedSpace,
+  search: string | undefined,
+  filters: readonly Filter[] | undefined,
+  ctx: ColumnSqlContext,
+): SQL {
   const inSpace = eq(spacePositions.spaceId, space.id);
-  return (search === undefined ? inSpace : and(inSpace, searchPredicate(search))) as SQL;
+  const parts = [inSpace, ...(search === undefined ? [] : [searchPredicate(search)])];
+  return and(...parts, ...filterPredicates(filters, ctx)) as SQL;
 }
 
 export async function queryTablePage(
@@ -112,7 +128,7 @@ export async function queryTablePage(
     .innerJoin(exchanges, eq(exchanges.mic, listings.exchangeMic))
     .leftJoin(m, eq(m.listingId, listings.id))
     .leftJoin(fx, eq(fx.currency, priceMajorCurrency))
-    .where(whereClause(space, q.search))
+    .where(whereClause(space, q.search, q.filters, ctx))
     .orderBy(...orderBy(q.sort, ctx))
     .limit(q.limit)
     .offset(q.offset);
@@ -164,7 +180,12 @@ export async function queryTableTotals(
   db: DbExecutor,
   space: AuthorizedSpace,
   search: string | undefined,
+  filters: readonly Filter[] | undefined,
+  period: DashboardPeriod,
 ): Promise<{ total: number; computedAt: Date | null; oldestComputedAt: Date | null }> {
+  // The EUR rate is needed by the `price_eur` / `tracked_value_eur` filters (same D25 rule as the page).
+  const fx = currentFxRates(db, space);
+  const ctx = { period, fxRate: eurRate(fx) };
   const [row] = await db
     .select({
       total: sql<number>`count(*)::int`,
@@ -176,7 +197,8 @@ export async function queryTableTotals(
     .innerJoin(listings, eq(listings.id, spacePositions.listingId))
     .innerJoin(exchanges, eq(exchanges.mic, listings.exchangeMic))
     .leftJoin(m, eq(m.listingId, listings.id))
-    .where(whereClause(space, search));
+    .leftJoin(fx, eq(fx.currency, priceMajorCurrency))
+    .where(whereClause(space, search, filters, ctx));
   return {
     total: row?.total ?? 0,
     computedAt: row?.computedAt ?? null,

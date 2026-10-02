@@ -10,10 +10,19 @@ import {
 } from './dashboard';
 
 import { positionsTableInputFields, tableValuesSchema } from './table';
+import { positionsFacetsInputSchema, positionsFacetsOutputSchema } from './table-facets';
+import {
+  tableConfigGetInputSchema,
+  tableConfigOutputSchema,
+  tableConfigSaveInputSchema,
+} from './table-config';
 
 export * from './columns';
 export * from './dashboard';
+export * from './filters';
 export * from './table';
+export * from './table-config';
+export * from './table-facets';
 export * from './table-reasons';
 
 /** Browser-safe oRPC contract. Never import server code here. */
@@ -174,7 +183,7 @@ export const POSITIONS_LIST_MAX = 200;
 /**
  * Omitted `page` = first page of `POSITIONS_LIST_MAX` rows. Offset pagination over the requested
  * sort (default: instrument name case-insensitive, then id). S6 adds `period`, `search`, `sort`
- * and `columns` (all optional, see `positionsTableInputFields`); filters arrive in S7.
+ * `columns` and `filters` (S7) (all optional, see `positionsTableInputFields`).
  */
 export const positionsListInputSchema = spaceIdInputSchema.extend({
   page: z
@@ -199,7 +208,7 @@ export type TablePositionRow = z.infer<typeof tablePositionRowSchema>;
 
 export const positionsListOutputSchema = z.object({
   rows: z.array(tablePositionRowSchema),
-  /** Positions matching the search (not just this page). */
+  /** Positions matching the search AND the filters (not just this page). */
   total: z.number().int().min(0),
   /** `offset + rows.length < total`: more rows exist after this page. */
   hasMore: z.boolean(),
@@ -271,17 +280,31 @@ export const contract = {
     setActive: oc.input(spaceIdInputSchema).output(z.object({ activeSpaceId: z.uuid() })),
   },
   positions: {
-    /** Server-side sort, search and pagination over the space's positions (S6); PostgreSQL only. */
+    /** Server-side sort, search, filters (S7) and pagination over the space's positions; PostgreSQL only. */
     list: oc
       .input(positionsListInputSchema)
       .output(positionsListOutputSchema)
       .errors({ TOO_MANY_REQUESTS: tooManyRequestsError }),
+    /** Choices (with counts) of the enum filters over the whole space (S7); PostgreSQL only. */
+    facets: oc.input(positionsFacetsInputSchema).output(positionsFacetsOutputSchema),
     /** owner/editor only. `quantity: null` turns the entry into a watchlist entry. */
     setQuantity: oc
       .input(setQuantityInputSchema)
       .output(z.object({ positionId: z.uuid(), quantity: z.string().nullable() })),
     /** owner/editor only. NOT_FOUND when the position is not in that space (also when already removed). */
     remove: oc.input(removePositionInputSchema).output(z.object({ ok: z.literal(true) })),
+  },
+  /**
+   * S7: the caller's OWN table view of a space (never another user's; no userId in any input).
+   * viewer+: it is personal view config, not shared data, so a read-only member keeps their view.
+   */
+  tableConfig: {
+    /** Migrated on read; `isDefault` when nothing is saved (D24 defaults). */
+    get: oc.input(tableConfigGetInputSchema).output(tableConfigOutputSchema),
+    /** Replaces the whole config (strict validation). Returns what `get` will return. */
+    save: oc.input(tableConfigSaveInputSchema).output(tableConfigOutputSchema),
+    /** Deletes the saved row: back to the defaults. Idempotent. */
+    reset: oc.input(tableConfigGetInputSchema).output(tableConfigOutputSchema),
   },
   /**
    * S5, all viewer-level and space-scoped. They read PostgreSQL only (never a provider); the

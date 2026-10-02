@@ -50,6 +50,13 @@
       "when": 1790856711988,
       "tag": "0006_unaccent_extension",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790961013989,
+      "tag": "0007_table_configs",
+      "breakpoints": true
     }
   ]
 }
