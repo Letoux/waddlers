@@ -186,7 +186,14 @@ export const positionsListInputSchema = spaceIdInputSchema.extend({
 });
 export type PositionsListInput = z.infer<typeof positionsListInputSchema>;
 
-export const tablePositionRowSchema = positionRowSchema.extend({ values: tableValuesSchema });
+export const tablePositionRowSchema = positionRowSchema.extend({
+  values: tableValuesSchema,
+  /**
+   * `values.description` is a preview of at most `DESCRIPTION_PREVIEW_CHARS` characters: true when
+   * the stored text is longer (render an ellipsis). False when it is whole, absent, or not requested.
+   */
+  descriptionTruncated: z.boolean(),
+});
 export type TablePositionRow = z.infer<typeof tablePositionRowSchema>;
 
 export const positionsListOutputSchema = z.object({
@@ -198,10 +205,13 @@ export const positionsListOutputSchema = z.object({
   /** Period used for `perf_period`. */
   period: dashboardPeriodSchema,
   /**
-   * When the worker last materialized the metrics of the matching rows (newest `computed_at`,
-   * ISO instant); `null` when none has metrics. Not a price time: each price cell carries its own `asOf`.
+   * When the worker last materialized the metrics of the matching rows: NEWEST `computed_at` (ISO
+   * instant), `null` when none has metrics. Not a price time: each price cell carries its own `asOf`.
+   * (Was `asOf` before the S6 review.)
    */
-  asOf: z.iso.datetime().nullable(),
+  computedAt: z.iso.datetime().nullable(),
+  /** OLDEST `computed_at` among the matching rows that have metrics: how stale the laggard is. `null` when none. */
+  oldestComputedAt: z.iso.datetime().nullable(),
 });
 export type PositionsListOutput = z.infer<typeof positionsListOutputSchema>;
 
@@ -214,7 +224,7 @@ export type SetQuantityInput = z.infer<typeof setQuantityInputSchema>;
 
 export const removePositionInputSchema = z.object({ spaceId: z.uuid(), positionId: z.uuid() });
 
-/** Typed 429 for login/changePassword and dashboard.summary/history; also sent as a `Retry-After` header. */
+/** Typed 429 for login/changePassword, dashboard.summary/history and positions.list (in-flight cap); also sent as a `Retry-After` header. */
 export const tooManyRequestsError = {
   status: 429,
   message: 'Too many attempts',
@@ -225,7 +235,8 @@ export const tooManyRequestsError = {
  * Error codes the UI must handle:
  * - UNAUTHORIZED: bad credentials (login) or no/expired session (everything else);
  * - TOO_MANY_REQUESTS: login/changePassword throttled, or dashboard.summary/history over the per-user
- *   concurrency/rate cap (retry after `data.retryAfterSeconds`);
+ *   concurrency/rate cap, or positions.list over its 4 concurrent calls per user, with no rate limit
+ *   (retry after `data.retryAfterSeconds`);
  * - INVALID_CURRENT_PASSWORD: changePassword with a wrong current password (session stays valid);
  * - BAD_REQUEST: input failed validation (never render `message`/`issues` raw);
  * - NOT_FOUND: space-scoped procedures, for a space the caller cannot access AND for a space or
@@ -260,7 +271,10 @@ export const contract = {
   },
   positions: {
     /** Server-side sort, search and pagination over the space's positions (S6); PostgreSQL only. */
-    list: oc.input(positionsListInputSchema).output(positionsListOutputSchema),
+    list: oc
+      .input(positionsListInputSchema)
+      .output(positionsListOutputSchema)
+      .errors({ TOO_MANY_REQUESTS: tooManyRequestsError }),
     /** owner/editor only. `quantity: null` turns the entry into a watchlist entry. */
     setQuantity: oc
       .input(setQuantityInputSchema)

@@ -53,6 +53,11 @@ describe('DML-only application role', () => {
     await app`delete from users where username = 'roles-it'`;
   });
 
+  it('can call unaccent (migration 0006: the table search runs as the app role)', async () => {
+    const [row] = await app`select unaccent(lower('Électricité d’Hermès')) as folded`;
+    expect(row).toEqual({ folded: "electricite d'hermes" });
+  });
+
   it('cannot run DDL, truncate, or touch the migration history', async () => {
     const denied = async (statement: string) => {
       await expect(app.unsafe(statement)).rejects.toMatchObject({ code: '42501' });

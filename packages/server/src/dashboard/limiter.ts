@@ -11,7 +11,17 @@ export interface DashboardLimiterOptions {
 export type Admission =
   { allowed: true; release: () => void } | { allowed: false; retryAfterMs: number };
 
+/** Per-call policy: a cap of its own and/or no rate check (an in-flight cap only). */
+export interface AdmissionPolicy {
+  /** Overrides the limiter's `maxConcurrent` for this procedure. */
+  maxConcurrent?: number;
+  /** `false` = no token bucket for this procedure (nothing consumed, nothing checked). Default true. */
+  rated?: boolean;
+}
+
 export const DASHBOARD_MAX_CONCURRENT = 2;
+/** `positions.list` (S6): at most this many calls of one user in flight, NO rate limit (typing, sorting, paging). */
+export const POSITIONS_LIST_MAX_CONCURRENT = 4;
 export const DASHBOARD_RATE_PER_MINUTE = 30;
 
 interface Entry {
@@ -40,19 +50,20 @@ export class DashboardLimiter {
     this.now = options.now ?? Date.now;
   }
 
-  acquire(userId: string, procedure: string): Admission {
+  acquire(userId: string, procedure: string, policy: AdmissionPolicy = {}): Admission {
     const now = this.now();
     const entry = this.entryFor(userId, now);
     const running = entry.inFlight.get(procedure) ?? 0;
-    if (running >= this.options.maxConcurrent) {
+    const rated = policy.rated ?? true;
+    if (running >= (policy.maxConcurrent ?? this.options.maxConcurrent)) {
       // A request is running: it is expected to finish within about a second.
       return { allowed: false, retryAfterMs: 1_000 };
     }
-    if (entry.tokens < 1) {
+    if (rated && entry.tokens < 1) {
       const perMs = this.options.ratePerMinute / 60_000;
       return { allowed: false, retryAfterMs: Math.ceil((1 - entry.tokens) / perMs) };
     }
-    entry.tokens -= 1;
+    if (rated) entry.tokens -= 1;
     entry.inFlight.set(procedure, running + 1);
     let released = false;
     return {

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { getDb } from '../src/db/client';
 import {
   exchanges,
+  fxDaily,
   instruments,
   listingMetrics,
   listings,
@@ -63,6 +64,36 @@ export async function ensureExchanges(): Promise<void> {
     .values([...TEST_EXCHANGES])
     .onConflictDoNothing();
 }
+
+export interface FxSpec {
+  currency: string;
+  /** Units of `currency` per 1 EUR. */
+  rate: string;
+  date: string;
+}
+
+/** REPLACES the daily FX rows (global table) with these: what D25's EUR price reads. */
+export async function seedFx(rows: readonly FxSpec[]): Promise<void> {
+  await getDb().delete(fxDaily);
+  if (rows.length === 0) return;
+  await getDb()
+    .insert(fxDaily)
+    .values(
+      rows.map((r) => ({
+        currency: r.currency,
+        ratePerEur: r.rate,
+        rateDate: r.date,
+        source: 'test',
+        fetchedAt: new Date('2026-09-30T12:00:00Z'),
+      })),
+    );
+}
+
+/** USD 1.25 and GBP 0.8 on the fixtures' price date: the rates the hand-written EUR prices assume. */
+export const DEFAULT_FX: readonly FxSpec[] = [
+  { currency: 'USD', rate: '1.25', date: '2026-09-30' },
+  { currency: 'GBP', rate: '0.8', date: '2026-09-30' },
+];
 
 function metricsRow(listingId: string, m: MetricsSpec, currency: string, now: Date) {
   const price = m.price === undefined ? '100' : m.price;

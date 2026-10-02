@@ -136,6 +136,8 @@ export function latestFxRows(
  * THE "current rule" for FX (D21/D22/D23): per currency the newest stored rate dated in
  * `[asOf - toleranceDays, asOf]`, parsed once; an unparsable or non-positive rate is no rate.
  * Used by the total, by the terminal point of the series and by the `current` FX mode.
+ * D25: the table re-expresses this rule in SQL (`spaces/table-fx.ts`, same window constant and
+ * minor-unit table); `spaces/table-consistency.int.test.ts` fails if the two ever disagree.
  */
 export function currentRates(
   fxRows: readonly FxRow[],

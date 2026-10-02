@@ -1,0 +1,1441 @@
+{
+  "id": "62631607-01e9-4324-a3c8-6be5b26a1c4e",
+  "prevId": "37c2ab2c-881b-413c-8948-1a399d30859a",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.exchanges": {
+      "name": "exchanges",
+      "schema": "",
+      "columns": {
+        "mic": {
+          "name": "mic",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "timezone": {
+          "name": "timezone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "country": {
+          "name": "country",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "exchanges_mic_format": {
+          "name": "exchanges_mic_format",
+          "value": "\"exchanges\".\"mic\" ~ '^[A-Z0-9]{4}$'"
+        },
+        "exchanges_country_format": {
+          "name": "exchanges_country_format",
+          "value": "\"exchanges\".\"country\" ~ '^[A-Z]{2}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.fx_daily": {
+      "name": "fx_daily",
+      "schema": "",
+      "columns": {
+        "rate_date": {
+          "name": "rate_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "currency": {
+          "name": "currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rate_per_eur": {
+          "name": "rate_per_eur",
+          "type": "numeric(20, 10)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fetched_at": {
+          "name": "fetched_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "fx_daily_currency_date_idx": {
+          "name": "fx_daily_currency_date_idx",
+          "columns": [
+            {
+              "expression": "currency",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "rate_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "fx_daily_rate_date_currency_pk": {
+          "name": "fx_daily_rate_date_currency_pk",
+          "columns": ["rate_date", "currency"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "fx_daily_rate_positive": {
+          "name": "fx_daily_rate_positive",
+          "value": "\"fx_daily\".\"rate_per_eur\" > 0 and \"fx_daily\".\"rate_per_eur\" <> 'NaN'"
+        },
+        "fx_daily_currency_format": {
+          "name": "fx_daily_currency_format",
+          "value": "\"fx_daily\".\"currency\" ~ '^[A-Z]{3}$' and \"fx_daily\".\"currency\" <> 'EUR'"
+        },
+        "fx_daily_source_format": {
+          "name": "fx_daily_source_format",
+          "value": "\"fx_daily\".\"source\" ~ '^[a-z][a-z0-9_]{1,31}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.instruments": {
+      "name": "instruments",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "isin": {
+          "name": "isin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sector": {
+          "name": "sector",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "instruments_isin_unique": {
+          "name": "instruments_isin_unique",
+          "columns": ["isin"],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "instruments_type_check": {
+          "name": "instruments_type_check",
+          "value": "\"instruments\".\"type\" in ('stock', 'etf')"
+        },
+        "instruments_name_not_blank": {
+          "name": "instruments_name_not_blank",
+          "value": "length(btrim(\"instruments\".\"name\")) > 0"
+        },
+        "instruments_isin_format": {
+          "name": "instruments_isin_format",
+          "value": "\"instruments\".\"isin\" ~ '^[A-Z]{2}[A-Z0-9]{9}[0-9]$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.listing_metrics": {
+      "name": "listing_metrics",
+      "schema": "",
+      "columns": {
+        "listing_id": {
+          "name": "listing_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "computed_at": {
+          "name": "computed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "as_of_date": {
+          "name": "as_of_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "price": {
+          "name": "price",
+          "type": "numeric(24, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "price_currency": {
+          "name": "price_currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "price_basis": {
+          "name": "price_basis",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "price_as_of": {
+          "name": "price_as_of",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "price_eur": {
+          "name": "price_eur",
+          "type": "numeric(24, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "price_eur_reason": {
+          "name": "price_eur_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fx_rate_per_eur": {
+          "name": "fx_rate_per_eur",
+          "type": "numeric(20, 10)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fx_rate_date": {
+          "name": "fx_rate_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_1w": {
+          "name": "perf_1w",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_1w_base_date": {
+          "name": "perf_1w_base_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_1w_reason": {
+          "name": "perf_1w_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_1m": {
+          "name": "perf_1m",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_1m_base_date": {
+          "name": "perf_1m_base_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_1m_reason": {
+          "name": "perf_1m_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_6m": {
+          "name": "perf_6m",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_6m_base_date": {
+          "name": "perf_6m_base_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_6m_reason": {
+          "name": "perf_6m_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_1y": {
+          "name": "perf_1y",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_1y_base_date": {
+          "name": "perf_1y_base_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_1y_reason": {
+          "name": "perf_1y_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_5y": {
+          "name": "perf_5y",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_5y_base_date": {
+          "name": "perf_5y_base_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_5y_reason": {
+          "name": "perf_5y_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_max": {
+          "name": "perf_max",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_max_base_date": {
+          "name": "perf_max_base_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "perf_max_reason": {
+          "name": "perf_max_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "listing_metrics_listing_id_listings_id_fk": {
+          "name": "listing_metrics_listing_id_listings_id_fk",
+          "tableFrom": "listing_metrics",
+          "columnsFrom": ["listing_id"],
+          "tableTo": "listings",
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "listing_metrics_price_positive": {
+          "name": "listing_metrics_price_positive",
+          "value": "\"listing_metrics\".\"price\" is null or (\"listing_metrics\".\"price\" > 0 and \"listing_metrics\".\"price\" <> 'NaN')"
+        },
+        "listing_metrics_price_eur_positive": {
+          "name": "listing_metrics_price_eur_positive",
+          "value": "\"listing_metrics\".\"price_eur\" is null or (\"listing_metrics\".\"price_eur\" > 0 and \"listing_metrics\".\"price_eur\" <> 'NaN')"
+        },
+        "listing_metrics_price_basis_check": {
+          "name": "listing_metrics_price_basis_check",
+          "value": "\"listing_metrics\".\"price_basis\" is null or \"listing_metrics\".\"price_basis\" in ('quote', 'close')"
+        },
+        "listing_metrics_price_consistency": {
+          "name": "listing_metrics_price_consistency",
+          "value": "(\"listing_metrics\".\"price\" is null) = (\"listing_metrics\".\"price_basis\" is null) and (\"listing_metrics\".\"price\" is null) = (\"listing_metrics\".\"as_of_date\" is null)"
+        },
+        "listing_metrics_price_eur_reason_check": {
+          "name": "listing_metrics_price_eur_reason_check",
+          "value": "(\"listing_metrics\".\"price_eur\" is null) = (\"listing_metrics\".\"price_eur_reason\" is not null)"
+        },
+        "listing_metrics_perf_1w_consistency": {
+          "name": "listing_metrics_perf_1w_consistency",
+          "value": "(\"listing_metrics\".\"perf_1w\" is null) = (\"listing_metrics\".\"perf_1w_reason\" is not null) and (\"listing_metrics\".\"perf_1w\" is null or \"listing_metrics\".\"perf_1w_base_date\" is not null)"
+        },
+        "listing_metrics_perf_1w_reason_format": {
+          "name": "listing_metrics_perf_1w_reason_format",
+          "value": "\"listing_metrics\".\"perf_1w_reason\" is null or \"listing_metrics\".\"perf_1w_reason\" ~ '^[a-z][a-z_]{1,39}$'"
+        },
+        "listing_metrics_perf_1w_finite": {
+          "name": "listing_metrics_perf_1w_finite",
+          "value": "\"listing_metrics\".\"perf_1w\" is null or \"listing_metrics\".\"perf_1w\" <> 'NaN'"
+        },
+        "listing_metrics_perf_1m_consistency": {
+          "name": "listing_metrics_perf_1m_consistency",
+          "value": "(\"listing_metrics\".\"perf_1m\" is null) = (\"listing_metrics\".\"perf_1m_reason\" is not null) and (\"listing_metrics\".\"perf_1m\" is null or \"listing_metrics\".\"perf_1m_base_date\" is not null)"
+        },
+        "listing_metrics_perf_1m_reason_format": {
+          "name": "listing_metrics_perf_1m_reason_format",
+          "value": "\"listing_metrics\".\"perf_1m_reason\" is null or \"listing_metrics\".\"perf_1m_reason\" ~ '^[a-z][a-z_]{1,39}$'"
+        },
+        "listing_metrics_perf_1m_finite": {
+          "name": "listing_metrics_perf_1m_finite",
+          "value": "\"listing_metrics\".\"perf_1m\" is null or \"listing_metrics\".\"perf_1m\" <> 'NaN'"
+        },
+        "listing_metrics_perf_6m_consistency": {
+          "name": "listing_metrics_perf_6m_consistency",
+          "value": "(\"listing_metrics\".\"perf_6m\" is null) = (\"listing_metrics\".\"perf_6m_reason\" is not null) and (\"listing_metrics\".\"perf_6m\" is null or \"listing_metrics\".\"perf_6m_base_date\" is not null)"
+        },
+        "listing_metrics_perf_6m_reason_format": {
+          "name": "listing_metrics_perf_6m_reason_format",
+          "value": "\"listing_metrics\".\"perf_6m_reason\" is null or \"listing_metrics\".\"perf_6m_reason\" ~ '^[a-z][a-z_]{1,39}$'"
+        },
+        "listing_metrics_perf_6m_finite": {
+          "name": "listing_metrics_perf_6m_finite",
+          "value": "\"listing_metrics\".\"perf_6m\" is null or \"listing_metrics\".\"perf_6m\" <> 'NaN'"
+        },
+        "listing_metrics_perf_1y_consistency": {
+          "name": "listing_metrics_perf_1y_consistency",
+          "value": "(\"listing_metrics\".\"perf_1y\" is null) = (\"listing_metrics\".\"perf_1y_reason\" is not null) and (\"listing_metrics\".\"perf_1y\" is null or \"listing_metrics\".\"perf_1y_base_date\" is not null)"
+        },
+        "listing_metrics_perf_1y_reason_format": {
+          "name": "listing_metrics_perf_1y_reason_format",
+          "value": "\"listing_metrics\".\"perf_1y_reason\" is null or \"listing_metrics\".\"perf_1y_reason\" ~ '^[a-z][a-z_]{1,39}$'"
+        },
+        "listing_metrics_perf_1y_finite": {
+          "name": "listing_metrics_perf_1y_finite",
+          "value": "\"listing_metrics\".\"perf_1y\" is null or \"listing_metrics\".\"perf_1y\" <> 'NaN'"
+        },
+        "listing_metrics_perf_5y_consistency": {
+          "name": "listing_metrics_perf_5y_consistency",
+          "value": "(\"listing_metrics\".\"perf_5y\" is null) = (\"listing_metrics\".\"perf_5y_reason\" is not null) and (\"listing_metrics\".\"perf_5y\" is null or \"listing_metrics\".\"perf_5y_base_date\" is not null)"
+        },
+        "listing_metrics_perf_5y_reason_format": {
+          "name": "listing_metrics_perf_5y_reason_format",
+          "value": "\"listing_metrics\".\"perf_5y_reason\" is null or \"listing_metrics\".\"perf_5y_reason\" ~ '^[a-z][a-z_]{1,39}$'"
+        },
+        "listing_metrics_perf_5y_finite": {
+          "name": "listing_metrics_perf_5y_finite",
+          "value": "\"listing_metrics\".\"perf_5y\" is null or \"listing_metrics\".\"perf_5y\" <> 'NaN'"
+        },
+        "listing_metrics_perf_max_consistency": {
+          "name": "listing_metrics_perf_max_consistency",
+          "value": "(\"listing_metrics\".\"perf_max\" is null) = (\"listing_metrics\".\"perf_max_reason\" is not null) and (\"listing_metrics\".\"perf_max\" is null or \"listing_metrics\".\"perf_max_base_date\" is not null)"
+        },
+        "listing_metrics_perf_max_reason_format": {
+          "name": "listing_metrics_perf_max_reason_format",
+          "value": "\"listing_metrics\".\"perf_max_reason\" is null or \"listing_metrics\".\"perf_max_reason\" ~ '^[a-z][a-z_]{1,39}$'"
+        },
+        "listing_metrics_perf_max_finite": {
+          "name": "listing_metrics_perf_max_finite",
+          "value": "\"listing_metrics\".\"perf_max\" is null or \"listing_metrics\".\"perf_max\" <> 'NaN'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.listing_provider_ids": {
+      "name": "listing_provider_ids",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "listing_id": {
+          "name": "listing_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_symbol": {
+          "name": "provider_symbol",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "listing_provider_ids_listing_id_listings_id_fk": {
+          "name": "listing_provider_ids_listing_id_listings_id_fk",
+          "tableFrom": "listing_provider_ids",
+          "columnsFrom": ["listing_id"],
+          "tableTo": "listings",
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "listing_provider_ids_listing_provider_unique": {
+          "name": "listing_provider_ids_listing_provider_unique",
+          "columns": ["listing_id", "provider"],
+          "nullsNotDistinct": false
+        },
+        "listing_provider_ids_provider_symbol_unique": {
+          "name": "listing_provider_ids_provider_symbol_unique",
+          "columns": ["provider", "provider_symbol"],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "listing_provider_ids_provider_format": {
+          "name": "listing_provider_ids_provider_format",
+          "value": "\"listing_provider_ids\".\"provider\" ~ '^[a-z][a-z0-9_]{1,31}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.listings": {
+      "name": "listings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "instrument_id": {
+          "name": "instrument_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "exchange_mic": {
+          "name": "exchange_mic",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "symbol": {
+          "name": "symbol",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "currency": {
+          "name": "currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "listings_instrument_id_idx": {
+          "name": "listings_instrument_id_idx",
+          "columns": [
+            {
+              "expression": "instrument_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "listings_instrument_id_instruments_id_fk": {
+          "name": "listings_instrument_id_instruments_id_fk",
+          "tableFrom": "listings",
+          "columnsFrom": ["instrument_id"],
+          "tableTo": "instruments",
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "restrict"
+        },
+        "listings_exchange_mic_exchanges_mic_fk": {
+          "name": "listings_exchange_mic_exchanges_mic_fk",
+          "tableFrom": "listings",
+          "columnsFrom": ["exchange_mic"],
+          "tableTo": "exchanges",
+          "columnsTo": ["mic"],
+          "onUpdate": "no action",
+          "onDelete": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "listings_exchange_symbol_unique": {
+          "name": "listings_exchange_symbol_unique",
+          "columns": ["exchange_mic", "symbol"],
+          "nullsNotDistinct": false
+        },
+        "listings_id_instrument_unique": {
+          "name": "listings_id_instrument_unique",
+          "columns": ["id", "instrument_id"],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "listings_currency_format": {
+          "name": "listings_currency_format",
+          "value": "\"listings\".\"currency\" ~ '^[A-Z]{3}$' or \"listings\".\"currency\" in ('GBp', 'ZAc')"
+        },
+        "listings_symbol_not_blank": {
+          "name": "listings_symbol_not_blank",
+          "value": "length(btrim(\"listings\".\"symbol\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.market_data_fetch_state": {
+      "name": "market_data_fetch_state",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "listing_id": {
+          "name": "listing_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_success_at": {
+          "name": "last_success_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_attempt_at": {
+          "name": "last_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_count": {
+          "name": "failure_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "next_retry_at": {
+          "name": "next_retry_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error_code": {
+          "name": "last_error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "history_complete_from": {
+          "name": "history_complete_from",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "market_data_fetch_state_listing_id_listings_id_fk": {
+          "name": "market_data_fetch_state_listing_id_listings_id_fk",
+          "tableFrom": "market_data_fetch_state",
+          "columnsFrom": ["listing_id"],
+          "tableTo": "listings",
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "market_data_fetch_state_listing_kind_unique": {
+          "name": "market_data_fetch_state_listing_kind_unique",
+          "columns": ["listing_id", "kind"],
+          "nullsNotDistinct": true
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "market_data_fetch_state_kind_check": {
+          "name": "market_data_fetch_state_kind_check",
+          "value": "\"market_data_fetch_state\".\"kind\" in ('quote', 'history', 'fx')"
+        },
+        "market_data_fetch_state_scope_check": {
+          "name": "market_data_fetch_state_scope_check",
+          "value": "(\"market_data_fetch_state\".\"kind\" = 'fx') = (\"market_data_fetch_state\".\"listing_id\" is null)"
+        },
+        "market_data_fetch_state_failures_check": {
+          "name": "market_data_fetch_state_failures_check",
+          "value": "\"market_data_fetch_state\".\"failure_count\" >= 0"
+        },
+        "market_data_fetch_state_error_code_format": {
+          "name": "market_data_fetch_state_error_code_format",
+          "value": "\"market_data_fetch_state\".\"last_error_code\" is null or \"market_data_fetch_state\".\"last_error_code\" ~ '^[a-z][a-z_]{1,39}$'"
+        },
+        "market_data_fetch_state_history_kind_check": {
+          "name": "market_data_fetch_state_history_kind_check",
+          "value": "\"market_data_fetch_state\".\"history_complete_from\" is null or \"market_data_fetch_state\".\"kind\" in ('history', 'fx')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.price_daily": {
+      "name": "price_daily",
+      "schema": "",
+      "columns": {
+        "listing_id": {
+          "name": "listing_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "trade_date": {
+          "name": "trade_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "close": {
+          "name": "close",
+          "type": "numeric(24, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "adj_close": {
+          "name": "adj_close",
+          "type": "numeric(24, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "currency": {
+          "name": "currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fetched_at": {
+          "name": "fetched_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "price_daily_listing_id_listings_id_fk": {
+          "name": "price_daily_listing_id_listings_id_fk",
+          "tableFrom": "price_daily",
+          "columnsFrom": ["listing_id"],
+          "tableTo": "listings",
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {
+        "price_daily_listing_id_trade_date_pk": {
+          "name": "price_daily_listing_id_trade_date_pk",
+          "columns": ["listing_id", "trade_date"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "price_daily_close_positive": {
+          "name": "price_daily_close_positive",
+          "value": "\"price_daily\".\"close\" is null or (\"price_daily\".\"close\" > 0 and \"price_daily\".\"close\" <> 'NaN')"
+        },
+        "price_daily_adj_close_positive": {
+          "name": "price_daily_adj_close_positive",
+          "value": "\"price_daily\".\"adj_close\" is null or (\"price_daily\".\"adj_close\" > 0 and \"price_daily\".\"adj_close\" <> 'NaN')"
+        },
+        "price_daily_currency_format": {
+          "name": "price_daily_currency_format",
+          "value": "\"price_daily\".\"currency\" ~ '^[A-Z]{3}$' or \"price_daily\".\"currency\" in ('GBp', 'ZAc')"
+        },
+        "price_daily_source_format": {
+          "name": "price_daily_source_format",
+          "value": "\"price_daily\".\"source\" ~ '^[a-z][a-z0-9_]{1,31}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.provider_usage": {
+      "name": "provider_usage",
+      "schema": "",
+      "columns": {
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "day": {
+          "name": "day",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "calls": {
+          "name": "calls",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "provider_usage_provider_day_pk": {
+          "name": "provider_usage_provider_day_pk",
+          "columns": ["provider", "day"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "provider_usage_calls_check": {
+          "name": "provider_usage_calls_check",
+          "value": "\"provider_usage\".\"calls\" >= 0"
+        },
+        "provider_usage_provider_format": {
+          "name": "provider_usage_provider_format",
+          "value": "\"provider_usage\".\"provider\" ~ '^[a-z][a-z0-9_]{1,31}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.quote_latest": {
+      "name": "quote_latest",
+      "schema": "",
+      "columns": {
+        "listing_id": {
+          "name": "listing_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "price": {
+          "name": "price",
+          "type": "numeric(24, 8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "currency": {
+          "name": "currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "as_of": {
+          "name": "as_of",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fetched_at": {
+          "name": "fetched_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "quote_latest_listing_id_listings_id_fk": {
+          "name": "quote_latest_listing_id_listings_id_fk",
+          "tableFrom": "quote_latest",
+          "columnsFrom": ["listing_id"],
+          "tableTo": "listings",
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "quote_latest_price_positive": {
+          "name": "quote_latest_price_positive",
+          "value": "\"quote_latest\".\"price\" > 0 and \"quote_latest\".\"price\" <> 'NaN'"
+        },
+        "quote_latest_currency_format": {
+          "name": "quote_latest_currency_format",
+          "value": "\"quote_latest\".\"currency\" ~ '^[A-Z]{3}$' or \"quote_latest\".\"currency\" in ('GBp', 'ZAc')"
+        },
+        "quote_latest_source_format": {
+          "name": "quote_latest_source_format",
+          "value": "\"quote_latest\".\"source\" ~ '^[a-z][a-z0-9_]{1,31}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.sessions": {
+      "name": "sessions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_agent": {
+          "name": "user_agent",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "sessions_user_id_idx": {
+          "name": "sessions_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "sessions_expires_at_idx": {
+          "name": "sessions_expires_at_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "sessions_user_id_users_id_fk": {
+          "name": "sessions_user_id_users_id_fk",
+          "tableFrom": "sessions",
+          "columnsFrom": ["user_id"],
+          "tableTo": "users",
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "sessions_token_hash_unique": {
+          "name": "sessions_token_hash_unique",
+          "columns": ["token_hash"],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "sessions_token_hash_format": {
+          "name": "sessions_token_hash_format",
+          "value": "\"sessions\".\"token_hash\" ~ '^[0-9a-f]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.space_members": {
+      "name": "space_members",
+      "schema": "",
+      "columns": {
+        "space_id": {
+          "name": "space_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "space_members_user_id_idx": {
+          "name": "space_members_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "space_members_space_id_spaces_id_fk": {
+          "name": "space_members_space_id_spaces_id_fk",
+          "tableFrom": "space_members",
+          "columnsFrom": ["space_id"],
+          "tableTo": "spaces",
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
+        },
+        "space_members_user_id_users_id_fk": {
+          "name": "space_members_user_id_users_id_fk",
+          "tableFrom": "space_members",
+          "columnsFrom": ["user_id"],
+          "tableTo": "users",
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {
+        "space_members_space_id_user_id_pk": {
+          "name": "space_members_space_id_user_id_pk",
+          "columns": ["space_id", "user_id"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "space_members_role_check": {
+          "name": "space_members_role_check",
+          "value": "\"space_members\".\"role\" in ('owner', 'editor', 'viewer')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.space_positions": {
+      "name": "space_positions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "instrument_id": {
+          "name": "instrument_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "listing_id": {
+          "name": "listing_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "selection_reason": {
+          "name": "selection_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "quantity": {
+          "name": "quantity",
+          "type": "numeric(24, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "space_positions_listing_id_idx": {
+          "name": "space_positions_listing_id_idx",
+          "columns": [
+            {
+              "expression": "listing_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "space_positions_space_id_spaces_id_fk": {
+          "name": "space_positions_space_id_spaces_id_fk",
+          "tableFrom": "space_positions",
+          "columnsFrom": ["space_id"],
+          "tableTo": "spaces",
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
+        },
+        "space_positions_listing_instrument_fk": {
+          "name": "space_positions_listing_instrument_fk",
+          "tableFrom": "space_positions",
+          "columnsFrom": ["listing_id", "instrument_id"],
+          "tableTo": "listings",
+          "columnsTo": ["id", "instrument_id"],
+          "onUpdate": "no action",
+          "onDelete": "restrict"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "space_positions_space_instrument_unique": {
+          "name": "space_positions_space_instrument_unique",
+          "columns": ["space_id", "instrument_id"],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "space_positions_quantity_valid": {
+          "name": "space_positions_quantity_valid",
+          "value": "\"space_positions\".\"quantity\" is null or (\"space_positions\".\"quantity\" >= 0 and \"space_positions\".\"quantity\" <> 'NaN')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.spaces": {
+      "name": "spaces",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "name": {
+          "name": "name",
+          "type": "citext",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reference_currency": {
+          "name": "reference_currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'EUR'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "spaces_name_unique": {
+          "name": "spaces_name_unique",
+          "columns": ["name"],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "spaces_reference_currency_format": {
+          "name": "spaces_reference_currency_format",
+          "value": "\"spaces\".\"reference_currency\" ~ '^[A-Z]{3}$' and \"spaces\".\"reference_currency\" not in ('GBX', 'ZAC', 'ILA')"
+        },
+        "spaces_name_valid": {
+          "name": "spaces_name_valid",
+          "value": "length(btrim(\"spaces\".\"name\"::text)) > 0 and char_length(\"spaces\".\"name\"::text) <= 64"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.users": {
+      "name": "users",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "username": {
+          "name": "username",
+          "type": "citext",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "password_hash": {
+          "name": "password_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "disabled_at": {
+          "name": "disabled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_space_id": {
+          "name": "last_space_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "users_last_space_id_spaces_id_fk": {
+          "name": "users_last_space_id_spaces_id_fk",
+          "tableFrom": "users",
+          "columnsFrom": ["last_space_id"],
+          "tableTo": "spaces",
+          "columnsTo": ["id"],
+          "onUpdate": "no action",
+          "onDelete": "set null"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "users_username_unique": {
+          "name": "users_username_unique",
+          "columns": ["username"],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "views": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

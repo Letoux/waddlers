@@ -6,7 +6,9 @@ import {
   DASHBOARD_MAX_CONCURRENT,
   DASHBOARD_RATE_PER_MINUTE,
   DashboardLimiter,
+  POSITIONS_LIST_MAX_CONCURRENT,
   retryAfterSeconds,
+  type AdmissionPolicy,
 } from './dashboard/limiter';
 import { getHistory, getMovers, getSummary, type DashboardDeps } from './dashboard/service';
 import { FX_TOLERANCE_DAYS } from './market-data/config';
@@ -162,18 +164,20 @@ export function createRouter({
   };
 
   /**
-   * Admission for the CPU-heavy dashboard procedures, per authenticated user. Runs after the space
+   * Admission per authenticated user for the CPU-heavy dashboard procedures (concurrency + rate) and
+   * for `positions.list` (concurrency only). Runs after the space
    * access check (an inaccessible space still answers NOT_FOUND, never 429) and holds its slot for
    * the whole call, compute included.
    */
   const admitted = async <T>(
     userId: string,
-    procedure: 'summary' | 'history',
+    procedure: 'summary' | 'history' | 'positions.list',
     ctx: RpcContext,
     errors: { TOO_MANY_REQUESTS: (options: { data: { retryAfterSeconds: number } }) => Error },
     run: () => Promise<T>,
+    policy?: AdmissionPolicy,
   ): Promise<T> => {
-    const admission = dashboardLimiter.acquire(userId, procedure);
+    const admission = dashboardLimiter.acquire(userId, procedure, policy);
     if (!admission.allowed) {
       const seconds = retryAfterSeconds(admission.retryAfterMs);
       ctx.resHeaders?.set('retry-after', String(seconds));
@@ -222,8 +226,16 @@ export function createRouter({
       ),
     },
     positions: {
-      list: spaceScoped('viewer').positions.list.handler(({ context, input }) =>
-        listSpacePositions(deps.getDb(), context.space, input, now),
+      // In-flight cap only (4 per user): no token bucket, typing/sorting/paging must never get a false 429.
+      list: spaceScoped('viewer').positions.list.handler(({ context, input, errors }) =>
+        admitted(
+          context.session.user.id,
+          'positions.list',
+          context,
+          errors,
+          () => listSpacePositions(deps.getDb(), context.space, input, now),
+          { maxConcurrent: POSITIONS_LIST_MAX_CONCURRENT, rated: false },
+        ),
       ),
       setQuantity: spaceScoped('editor').positions.setQuantity.handler(({ context, input }) =>
         setPositionQuantity(deps.getDb(), context.space, input.positionId, input.quantity),

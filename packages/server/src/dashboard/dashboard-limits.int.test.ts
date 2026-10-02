@@ -141,3 +141,52 @@ describe('dashboard token bucket (30 per minute per user)', () => {
     expect((await call(alice, aliceSpace)).status).toBe(200);
   });
 });
+
+describe('positions.list in-flight cap (4 per user, no rate limit)', () => {
+  const input = () => ({ spaceId: aliceSpace });
+
+  it('answers a typed 429 with retryAfterSeconds (and Retry-After) when four calls are running', async () => {
+    const { dashboardLimiter, rpc, loginAs } = make();
+    const cookie = await loginAs('alice');
+    const held = Array.from({ length: 4 }, () =>
+      dashboardLimiter.acquire(aliceId, 'positions.list', { maxConcurrent: 4, rated: false }),
+    );
+    expect(held.every((a) => a.allowed)).toBe(true);
+    const res = await rpc('positions.list', input(), { cookie });
+    expect(res.status).toBe(429);
+    expect(res.json.code).toBe('TOO_MANY_REQUESTS');
+    expect(res.json.data).toEqual({ retryAfterSeconds: 1 });
+    expect(res.headers.get('retry-after')).toBe('1');
+    // Another user, another procedure of the same user: unaffected.
+    const bob = await loginAs('bob');
+    expect((await rpc('positions.list', { spaceId: bobSpace }, { cookie: bob })).status).toBe(200);
+    expect(
+      (await rpc('dashboard.summary', { spaceId: aliceSpace, period: '1m' }, { cookie })).status,
+    ).toBe(200);
+    // A slot frees: the next call goes through.
+    const first = held[0];
+    if (first?.allowed) first.release();
+    expect((await rpc('positions.list', input(), { cookie })).status).toBe(200);
+  });
+
+  it('no rate limit: a long run of calls never gets a 429, and does not drain the dashboard bucket', async () => {
+    const { rpc, loginAs } = make({ ratePerMinute: 3 });
+    const cookie = await loginAs('alice');
+    for (let i = 0; i < 40; i += 1) {
+      expect((await rpc('positions.list', input(), { cookie })).status).toBe(200);
+    }
+    expect(
+      (await rpc('dashboard.summary', { spaceId: aliceSpace, period: '1m' }, { cookie })).status,
+    ).toBe(200);
+  });
+
+  it('the check runs after the space access check: an inaccessible space is NOT_FOUND, not 429', async () => {
+    const { dashboardLimiter, rpc, loginAs } = make();
+    const cookie = await loginAs('alice');
+    for (let i = 0; i < 4; i += 1) {
+      dashboardLimiter.acquire(aliceId, 'positions.list', { maxConcurrent: 4, rated: false });
+    }
+    const res = await rpc('positions.list', { spaceId: bobSpace }, { cookie });
+    expect(res.json.code).toBe('NOT_FOUND');
+  });
+});

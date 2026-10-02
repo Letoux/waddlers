@@ -20,14 +20,14 @@ export interface SerializedMoney {
  * Others (e.g. ILA, ZAC) are deliberately NOT guessed; they normalize to `null`
  * (invalid) until added here with a test.
  */
-const MINOR_UNITS: Readonly<Record<string, readonly [string, number]>> = {
+export const MINOR_UNITS: Readonly<Record<string, readonly [string, number]>> = {
   GBX: ['GBP', 100],
   GBp: ['GBP', 100],
   ZAc: ['ZAR', 100],
 };
 
 /** Provider spellings of minor units we do not support yet: rejected so they are never read as a major currency (100x error). */
-const UNSUPPORTED_MINOR_UNITS: ReadonlySet<string> = new Set(['ZAC', 'ILA']);
+export const UNSUPPORTED_MINOR_UNITS: ReadonlySet<string> = new Set(['ZAC', 'ILA']);
 
 export interface NormalizedCurrency {
   /** Major ISO code. */

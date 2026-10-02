@@ -2,7 +2,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createUser, disableUser } from '../admin';
 import { getDb } from '../db/client';
-import { spacePositions, spaces } from '../db/schema';
+import { listingMetrics, spacePositions, spaces } from '../db/schema';
 import {
   createApp,
   PASSWORD,
@@ -471,6 +471,41 @@ describe('positions.list (table, S6) isolation and validation', () => {
       expect(JSON.stringify(sorted)).not.toContain('Microsoft');
       expect(sorted.rows.map((r) => r.id)).not.toContain(fx.posB);
     }
+  });
+});
+
+describe('positions.list computedAt / oldestComputedAt are per space (S6 review F7)', () => {
+  it("space A reports A's own newest and oldest computed_at, never space B's later one", async () => {
+    const db = getDb();
+    const aListings = await db
+      .select({ id: spacePositions.listingId })
+      .from(spacePositions)
+      .where(eq(spacePositions.spaceId, fx.spaceA));
+    expect(aListings).toHaveLength(2);
+    const stamp = (id: string, iso: string) =>
+      db
+        .update(listingMetrics)
+        .set({ computedAt: new Date(iso) })
+        .where(eq(listingMetrics.listingId, id));
+    await stamp(aListings[0]!.id, '2026-09-30T08:00:00Z');
+    await stamp(aListings[1]!.id, '2026-09-30T09:00:00Z');
+    await stamp(fx.msft.listingId, '2026-09-30T23:00:00Z'); // B's, later than anything of A
+    const spec = PROCEDURES.find((p) => p.path === 'positions.list')!;
+    const stamps = async (actor: Actor, spaceId: string) => {
+      const json = (await call(spec, actor, spaceId, fx.posA, { spaceId })).json as unknown as {
+        computedAt: string | null;
+        oldestComputedAt: string | null;
+      };
+      return [json.computedAt, json.oldestComputedAt];
+    };
+    expect(await stamps('owner', fx.spaceA)).toEqual([
+      '2026-09-30T09:00:00.000Z',
+      '2026-09-30T08:00:00.000Z',
+    ]);
+    expect(await stamps('memberOfAnotherSpace', fx.spaceB)).toEqual([
+      '2026-09-30T23:00:00.000Z',
+      '2026-09-30T23:00:00.000Z',
+    ]);
   });
 });
 

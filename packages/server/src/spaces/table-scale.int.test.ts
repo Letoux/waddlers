@@ -12,7 +12,13 @@ import {
   useTestEnv,
 } from '../../test/auth-harness';
 import { createSpaceRow } from '../../test/space-fixtures';
-import { ensureExchanges, generateEntries, seedEntries } from '../../test/table-fixtures';
+import {
+  DEFAULT_FX,
+  ensureExchanges,
+  generateEntries,
+  seedEntries,
+  seedFx,
+} from '../../test/table-fixtures';
 
 /**
  * Scale budget (specs 38, D19): a 5 000-position space, plus a second one of the same size so the
@@ -20,7 +26,8 @@ import { ensureExchanges, generateEntries, seedEntries } from '../../test/table-
  * (median of 3, in-process HTTP handler incl. auth). Seeding takes a few seconds.
  */
 const POSITIONS = 5000;
-const BUDGET_MS = 300;
+/** Per-page budget; `TABLE_SCALE_BUDGET_MS` overrides it on a slower machine or a loaded CI runner. */
+const BUDGET_MS = Number(process.env.TABLE_SCALE_BUDGET_MS) || 300;
 const NOW = new Date('2026-09-30T12:00:00Z');
 const { rpc, loginAs } = createApp({ now: () => NOW });
 let cookie: string;
@@ -32,6 +39,7 @@ beforeAll(async () => {
   const userId = (await createUser(getDb(), { username: 'alice', password: PASSWORD })).id;
   cookie = await loginAs('alice');
   await ensureExchanges();
+  await seedFx(DEFAULT_FX);
   spaceId = await createSpaceRow('Gros PEA', [{ userId, role: 'viewer' }]);
   const other = await createSpaceRow('Autre', [{ userId, role: 'viewer' }]);
   await seedEntries(spaceId, generateEntries(POSITIONS, 1), NOW);
@@ -77,6 +85,8 @@ describe(`${POSITIONS}-position space (budget ${BUDGET_MS} ms per page)`, () => 
       { sort: { columnId: 'sector', direction: 'asc' }, page: { offset: 4950, limit: 50 } },
     ],
     ['search name (many hits)', { search: 'societe 1-' }],
+    ['search accented term (unaccent)', { search: 'SOCIÉTÉ 1-' }],
+    ['search major currency (gbp finds gbx)', { search: 'gbp' }],
     [
       'search sector + sort perf_1y',
       { search: 'techno', sort: { columnId: 'perf_1y', direction: 'desc' } },

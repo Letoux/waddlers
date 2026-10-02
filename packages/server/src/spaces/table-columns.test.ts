@@ -9,30 +9,33 @@ import {
   sortableColumnIdSchema,
 } from '@waddlers/contracts';
 import { PERIODS } from '@waddlers/domain';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildValues, type TableRowData } from './table-cells';
-import { escapeLike, SORT_SQL } from './table-columns';
+import { sql } from 'drizzle-orm';
+import { columnSql, escapeLike, SORT_SQL } from './table-columns';
 
-/** Specs 17, section by section (labels as written there; "Performance période" is added by 17 too). */
+/** Specs 17, section by section, word for word (plus the three non-§17 columns: Performance période is in §17's prose, Quantité and Valeur suivie are `tracking`). */
 const SPECS_17: Record<string, string[]> = {
   identification: [
     'Société',
     'Code',
-    'Type d’instrument',
+    "Type d'instrument",
     'Place de cotation retenue',
     'Logique de choix de la place',
     'Devise',
-    'Secteur d’activité',
+    "Secteur d'activité",
   ],
   description: ['Activité & positionnement concurrentiel'],
-  price: ['Cours (devise locale)', 'Taux de change → EUR', 'Cours en EUR', 'Date du cours'],
+  price: ['Cours dans la devise locale', 'Taux de change → EUR', 'Cours en EUR', 'Date du cours'],
   valuation: [
-    'Capitalisation (devise locale)',
+    'Capitalisation dans la devise locale',
     'Capitalisation en EUR',
-    'Valeur d’entreprise',
+    "Valeur d'entreprise",
     'VE / Capitalisation',
   ],
-  debt: ['Dette nette', 'Taux d’endettement', 'Nature du ratio d’endettement'],
+  debt: ['Dette nette', "Taux d'endettement", "Nature du ratio d'endettement"],
   shareholders: ['Principaux actionnaires'],
   dividends: ['Dividende annuel', 'Rendement du dividende'],
   performance: [
@@ -48,6 +51,30 @@ const SPECS_17: Record<string, string[]> = {
 };
 
 describe('column registry (contracts)', () => {
+  it('labels are the specs 17 bullets verbatim (read from specs.md, not retyped)', () => {
+    const specs = readFileSync(path.resolve(__dirname, '../../../../specs.md'), 'utf8');
+    const section = specs.slice(
+      specs.indexOf('# 17. Liste des colonnes disponibles'),
+      specs.indexOf('# 18. Tableau par défaut'),
+    );
+    const bullets = new Set(
+      section
+        .split('\n')
+        .filter((l) => l.startsWith('* '))
+        .map((l) => l.slice(2).trim()),
+    );
+    const extras = new Set(['Performance période', 'Quantité', 'Valeur suivie (EUR)']);
+    for (const c of TABLE_COLUMNS) {
+      if (!extras.has(c.label)) expect(bullets, c.label).toContain(c.label);
+    }
+    expect(bullets.size).toBe(TABLE_COLUMNS.length - extras.size);
+    // Compact forms (specs 18) live in shortLabel, never in label.
+    expect(TABLE_COLUMNS_BY_ID.get('price_eur')).toMatchObject({
+      label: 'Cours en EUR',
+      shortLabel: 'Cours EUR',
+    });
+  });
+
   it('declares every specs 17 column, in its section', () => {
     for (const [group, labels] of Object.entries(SPECS_17)) {
       const actual = TABLE_COLUMNS.filter((c) => c.group === group).map((c) => c.label);
@@ -151,13 +178,19 @@ describe('column registry (contracts)', () => {
 });
 
 describe('column registry (SQL mapping)', () => {
-  it('maps exactly the sortable columns', () => {
-    expect(Object.keys(SORT_SQL).sort()).toEqual([...SORTABLE_COLUMN_IDS].sort());
+  const ctx = (period: (typeof PERIODS)[number]) => ({ period, fxRate: sql`1::numeric` });
+  const AVAILABLE = TABLE_COLUMNS.filter((c) => c.availability === 'available').map((c) => c.id);
+
+  it('maps exactly the available columns (one mapping for sort and filters)', () => {
+    expect(Object.keys(columnSql(ctx('1m'))).sort()).toEqual([...AVAILABLE].sort());
   });
 
-  it('every sortable column yields an expression for every period', () => {
-    for (const id of SORTABLE_COLUMN_IDS) {
-      for (const period of PERIODS) expect(SORT_SQL[id](period), `${id}/${period}`).toBeDefined();
+  it('SORT_SQL derives from it: exactly the sortable columns, for every period', () => {
+    for (const period of PERIODS) {
+      expect(Object.keys(SORT_SQL(ctx(period))).sort()).toEqual([...SORTABLE_COLUMN_IDS].sort());
+      for (const id of SORTABLE_COLUMN_IDS) {
+        expect(SORT_SQL(ctx(period))[id], `${id}/${period}`).toBeDefined();
+      }
     }
   });
 

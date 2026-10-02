@@ -1,4 +1,12 @@
-import type { DashboardPeriod, FxCell, MoneyCell, PerfCell } from '@waddlers/contracts';
+import {
+  TABLE_COLUMNS,
+  percentCellSchema,
+  tableCellSchema,
+  type DashboardPeriod,
+  type FxCell,
+  type MoneyCell,
+  type PerfCell,
+} from '@waddlers/contracts';
 import { describe, expect, it } from 'vitest';
 import { buildValues, type TableRowData } from './table-cells';
 
@@ -24,7 +32,7 @@ function row(
       price: '100',
       priceCurrency: 'EUR',
       priceEur: '100',
-      priceEurReason: null,
+      trackedValueEur: '1000',
       fxRatePerEur: null,
       fxRateDate: null,
       perf: { '1w': noPerf, '1m': noPerf, '6m': noPerf, '1y': noPerf, '5y': noPerf, max: noPerf },
@@ -77,12 +85,9 @@ describe('price cells', () => {
   });
 
   it('a missing rate is null, never 1', () => {
-    const r = row(
-      { currency: 'USD' },
-      { priceCurrency: 'USD', priceEur: null, priceEurReason: 'rate_missing' },
-    );
+    const r = row({ currency: 'USD' }, { priceCurrency: 'USD', priceEur: null });
     expect(get<FxCell>(r, 'fx_rate').eurPerUnit).toBeNull();
-    expect(get<MoneyCell>(r, 'price_eur')).toMatchObject({ amount: null, reason: 'rate_missing' });
+    expect(get<MoneyCell>(r, 'price_eur')).toMatchObject({ amount: null, reason: 'fx_missing' });
   });
 
   it('staleness: price older than 5 days, rate older than 7 days (boundaries 5/6 and 7/8)', () => {
@@ -133,7 +138,10 @@ describe('perf and tracked value', () => {
 
   it('tracked value = quantity x EUR price; watchlist and missing price are null with a reason', () => {
     expect(
-      get<MoneyCell>(row({ quantity: '10.5' }, { priceEur: '99.99' }), 'tracked_value_eur'),
+      get<MoneyCell>(
+        row({ quantity: '10.5' }, { priceEur: '99.99', trackedValueEur: '1049.895' }),
+        'tracked_value_eur',
+      ),
     ).toMatchObject({
       amount: '1049.895',
       currency: 'EUR',
@@ -143,18 +151,28 @@ describe('perf and tracked value', () => {
       reason: 'watchlist',
     });
     expect(
-      get<MoneyCell>(
-        row({}, { priceEur: null, priceEurReason: 'rate_missing' }),
-        'tracked_value_eur',
-      ),
-    ).toMatchObject({ amount: null, reason: 'rate_missing' });
+      get<MoneyCell>(row({}, { priceEur: null, trackedValueEur: null }), 'tracked_value_eur'),
+    ).toMatchObject({ amount: null, reason: 'fx_missing' });
     // a real zero quantity is a real zero value, not a missing one
-    expect(get<MoneyCell>(row({ quantity: '0.00000000' }), 'tracked_value_eur').amount).toBe('0');
+    expect(
+      get<MoneyCell>(row({ quantity: '0.00000000' }, { trackedValueEur: '0' }), 'tracked_value_eur')
+        .amount,
+    ).toBe('0');
   });
 
-  it('quantity is canonical and null stays null (watchlist, never 0)', () => {
-    expect(get(row({ quantity: '12.50000000' }), 'quantity')).toBe('12.5');
-    expect(get(row({ quantity: null }), 'quantity')).toBeNull();
+  it('quantity has no entry in values: row.quantity is the single source (F3)', () => {
+    const values = buildValues(row({ quantity: '12.5' }), ['quantity', 'symbol'], '1m', TODAY);
+    expect(Object.keys(values)).toEqual(['symbol']);
+  });
+
+  it('a watchlist tracked value is not stale (nothing to be stale), a held one is', () => {
+    const stale = { asOfDate: '2026-09-01' };
+    expect(get<MoneyCell>(row({ quantity: null }, stale), 'tracked_value_eur')).toMatchObject({
+      amount: null,
+      isStale: false,
+      reason: 'watchlist',
+    });
+    expect(get<MoneyCell>(row({ quantity: '10' }, stale), 'tracked_value_eur').isStale).toBe(true);
   });
 });
 
@@ -163,5 +181,40 @@ describe('text cells', () => {
     const etf = row({ instrumentType: 'etf', sector: null });
     expect(get(etf, 'sector')).toBeNull();
     expect(get(etf, 'instrument_type')).toBe('etf');
+  });
+});
+
+describe('cell kinds (discriminant)', () => {
+  const available = TABLE_COLUMNS.filter((c) => c.availability === 'available').map((c) => c.id);
+
+  it('every emitted cell parses with the contract and carries the kind its column declares', () => {
+    const values = buildValues(row({ sector: 'Industrie' }), available, '1m', TODAY);
+    for (const def of TABLE_COLUMNS.filter((c) => c.availability === 'available')) {
+      if (def.cell === 'row') {
+        expect(values, def.id).not.toHaveProperty(def.id);
+        continue;
+      }
+      const cell = tableCellSchema.parse(values[def.id]);
+      if (typeof cell === 'object' && cell !== null) expect(cell.kind, def.id).toBe(def.cell);
+      else expect(['text', 'decimal', 'date'], def.id).toContain(def.cell);
+    }
+  });
+
+  it('the percent cell (debt ratio, dividend yield) has no baseDate and parses', () => {
+    expect(
+      percentCellSchema.parse({
+        kind: 'percent',
+        value: '3.5',
+        reason: null,
+        asOf: null,
+        isStale: false,
+      }),
+    ).not.toHaveProperty('baseDate');
+    expect(TABLE_COLUMNS.filter((c) => c.cell === 'percent').map((c) => c.id)).toEqual([
+      'debt_ratio',
+      'dividend_yield',
+    ]);
+    // A bare object without `kind` is no longer a cell.
+    expect(tableCellSchema.safeParse({ value: null, baseDate: null }).success).toBe(false);
   });
 });

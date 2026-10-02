@@ -4,7 +4,10 @@ import * as schema from './schema';
 
 export type Database = PostgresJsDatabase<typeof schema>;
 /** Database or transaction handle: what repositories accept. */
-export type DbExecutor = Pick<Database, 'select' | 'insert' | 'update' | 'delete'>;
+export type DbExecutor = Pick<
+  Database,
+  'select' | 'selectDistinctOn' | 'insert' | 'update' | 'delete'
+>;
 export type PoolState = { sql: postgres.Sql; db: Database };
 
 /**

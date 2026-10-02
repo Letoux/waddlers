@@ -1,9 +1,14 @@
-import type { DashboardPeriod, SortableColumnId } from '@waddlers/contracts';
+import {
+  DESCRIPTION_PREVIEW_CHARS,
+  type DashboardPeriod,
+  type SortableColumnId,
+} from '@waddlers/contracts';
 import { and, eq, sql, type SQL } from 'drizzle-orm';
 import type { DbExecutor } from '../db/create';
 import { exchanges, instruments, listingMetrics, listings, spacePositions } from '../db/schema';
 import type { AuthorizedSpace } from './access';
-import { orderBy, searchPredicate, sectorExpr } from './table-columns';
+import { columnSql, orderBy, searchPredicate, sectorExpr } from './table-columns';
+import { currentFxRates, eurRate, priceMajorCurrency } from './table-fx';
 import type { TableRowData } from './table-cells';
 
 /**
@@ -30,10 +35,12 @@ export interface TablePositionRow {
   isin: string | null;
   listingId: string;
   exchangeMic: string;
+  descriptionTruncated: boolean;
   data: TableRowData;
 }
 
 const m = listingMetrics;
+const toDate = (v: unknown) => (v === null ? null : new Date(v as string));
 
 function whereClause(space: AuthorizedSpace, search: string | undefined): SQL {
   const inSpace = eq(spacePositions.spaceId, space.id);
@@ -45,6 +52,9 @@ export async function queryTablePage(
   space: AuthorizedSpace,
   q: TableQuery,
 ): Promise<TablePositionRow[]> {
+  const fx = currentFxRates(db, space.id);
+  const ctx = { period: q.period, fxRate: eurRate(fx) };
+  const cols = columnSql(ctx);
   const rows = await db
     .select({
       id: spacePositions.id,
@@ -56,7 +66,13 @@ export async function queryTablePage(
       instrumentType: instruments.type,
       isin: instruments.isin,
       sector: sql<string | null>`${sectorExpr}`,
-      description: q.withDescription ? instruments.description : sql<null>`null`,
+      // Preview only (security P3): the full text is S9's. Not selected at all unless requested.
+      description: q.withDescription
+        ? sql<string | null>`left(${instruments.description}, ${DESCRIPTION_PREVIEW_CHARS})`
+        : sql<null>`null`,
+      descriptionTruncated: q.withDescription
+        ? sql<boolean>`coalesce(char_length(${instruments.description}) > ${DESCRIPTION_PREVIEW_CHARS}, false)`
+        : sql<boolean>`false`,
       listingId: listings.id,
       symbol: listings.symbol,
       currency: listings.currency,
@@ -66,10 +82,11 @@ export async function queryTablePage(
       asOfDate: m.asOfDate,
       price: m.price,
       priceCurrency: m.priceCurrency,
-      priceEur: m.priceEur,
-      priceEurReason: m.priceEurReason,
-      fxRatePerEur: m.fxRatePerEur,
-      fxRateDate: m.fxRateDate,
+      // D25: the dashboard's current rule, in SQL (table-fx.ts).
+      priceEur: sql<string | null>`${cols.price_eur.value}`,
+      trackedValueEur: sql<string | null>`${cols.tracked_value_eur.value}`,
+      fxRatePerEur: sql<string | null>`${ctx.fxRate}`,
+      fxRateDate: fx.rateDate,
       p1w: m.perf1w,
       b1w: m.perf1wBaseDate,
       r1w: m.perf1wReason,
@@ -94,8 +111,9 @@ export async function queryTablePage(
     .innerJoin(listings, eq(listings.id, spacePositions.listingId))
     .innerJoin(exchanges, eq(exchanges.mic, listings.exchangeMic))
     .leftJoin(m, eq(m.listingId, listings.id))
+    .leftJoin(fx, eq(fx.currency, priceMajorCurrency))
     .where(whereClause(space, q.search))
-    .orderBy(...orderBy(q.sort, q.period))
+    .orderBy(...orderBy(q.sort, ctx))
     .limit(q.limit)
     .offset(q.offset);
 
@@ -106,6 +124,7 @@ export async function queryTablePage(
     isin: r.isin,
     listingId: r.listingId,
     exchangeMic: r.exchangeMic,
+    descriptionTruncated: r.descriptionTruncated,
     data: {
       quantity: r.quantity,
       selectionReason: r.selectionReason,
@@ -123,7 +142,7 @@ export async function queryTablePage(
               price: r.price,
               priceCurrency: r.priceCurrency,
               priceEur: r.priceEur,
-              priceEurReason: r.priceEurReason,
+              trackedValueEur: r.trackedValueEur,
               fxRatePerEur: r.fxRatePerEur,
               fxRateDate: r.fxRateDate,
               perf: {
@@ -140,18 +159,17 @@ export async function queryTablePage(
   }));
 }
 
-/** Matching positions and the newest `computed_at` among them (same filter, same snapshot). */
+/** Matching positions and the newest/oldest `computed_at` among them (same filter, same snapshot). */
 export async function queryTableTotals(
   db: DbExecutor,
   space: AuthorizedSpace,
   search: string | undefined,
-): Promise<{ total: number; computedAt: Date | null }> {
+): Promise<{ total: number; computedAt: Date | null; oldestComputedAt: Date | null }> {
   const [row] = await db
     .select({
       total: sql<number>`count(*)::int`,
-      computedAt: sql<Date | null>`max(${m.computedAt})`.mapWith((v) =>
-        v === null ? null : new Date(v as string),
-      ),
+      computedAt: sql<Date | null>`max(${m.computedAt})`.mapWith(toDate),
+      oldestComputedAt: sql<Date | null>`min(${m.computedAt})`.mapWith(toDate),
     })
     .from(spacePositions)
     .innerJoin(instruments, eq(instruments.id, spacePositions.instrumentId))
@@ -159,5 +177,9 @@ export async function queryTableTotals(
     .innerJoin(exchanges, eq(exchanges.mic, listings.exchangeMic))
     .leftJoin(m, eq(m.listingId, listings.id))
     .where(whereClause(space, search));
-  return { total: row?.total ?? 0, computedAt: row?.computedAt ?? null };
+  return {
+    total: row?.total ?? 0,
+    computedAt: row?.computedAt ?? null,
+    oldestComputedAt: row?.oldestComputedAt ?? null,
+  };
 }

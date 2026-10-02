@@ -13,7 +13,13 @@ import {
 } from '../../test/auth-harness';
 import { testConfig } from '../../test/market-fixtures';
 import { createPositionRow, createSpaceRow, ensureReferenceData } from '../../test/space-fixtures';
-import { ensureExchanges, SORT_DATASET, seedEntries } from '../../test/table-fixtures';
+import {
+  DEFAULT_FX,
+  ensureExchanges,
+  SORT_DATASET,
+  seedEntries,
+  seedFx,
+} from '../../test/table-fixtures';
 
 const NOW = new Date('2026-09-30T12:00:00Z');
 const { rpc, loginAs } = createApp({ now: () => NOW });
@@ -32,6 +38,7 @@ beforeEach(async () => {
   userId = (await createUser(getDb(), { username: 'alice', password: PASSWORD })).id;
   cookie = await loginAs('alice');
   await ensureExchanges();
+  await seedFx(DEFAULT_FX);
   spaceId = await createSpaceRow('PEA', [{ userId, role: 'viewer' }]);
 });
 
@@ -121,6 +128,52 @@ describe('LIKE wildcards are literal', () => {
     ["'; drop table spaces; --", []],
   ])('search %j', async (term, expected) => {
     expect(await found(term)).toEqual(expected);
+  });
+});
+
+describe('accent-, case- and apostrophe-insensitive (F2)', () => {
+  beforeEach(async () => {
+    await seedEntries(spaceId, [
+      { name: 'Société Générale', symbol: 'GLE', sector: 'Finance' },
+      { name: 'Sanofi', symbol: 'SAN', sector: 'Santé' },
+      { name: 'L’Oréal', symbol: 'OR' }, // typographic apostrophe stored in the data
+      { name: "Dell'Anno", symbol: 'DEL' }, // straight apostrophe stored in the data
+      { name: 'Hermès International', symbol: 'RMS' },
+      { name: 'Shell', symbol: 'SHEL', mic: 'XLON', currency: 'GBX' },
+      { name: 'Plain', symbol: 'PLN' },
+    ]);
+  });
+
+  it.each([
+    ['societe', ['Société Générale']],
+    ['SOCIETE GENERALE', ['Société Générale']],
+    ['Société', ['Société Générale']], // accented term against accented data
+    ['SANTE', ['Sanofi']], // sector, accent folded from the term side
+    ['santé', ['Sanofi']],
+    ["l'oreal", ['L’Oréal']], // straight term, typographic data
+    ['l’oreal', ['L’Oréal']], // typographic term, accented data
+    ['L‘Oréal', ['L’Oréal']], // left single quotation mark
+    ['dell’anno', ["Dell'Anno"]], // typographic term, straight data
+    ['hermes', ['Hermès International']],
+    ['HERMÈS', ['Hermès International']],
+    ['x%', []],
+  ])('search %j', async (term, expected) => {
+    expect(await found(term)).toEqual(expected);
+  });
+
+  it('the major currency finds minor-unit listings (GBP finds GBX, F11); GBX itself still works', async () => {
+    expect(await found('gbp')).toEqual(['Shell']);
+    expect(await found('GBX')).toEqual(['Shell']);
+    expect(await found('eur')).toEqual(
+      [
+        'Hermès International',
+        "Dell'Anno",
+        'L’Oréal',
+        'Plain',
+        'Sanofi',
+        'Société Générale',
+      ].sort(),
+    );
   });
 });
 

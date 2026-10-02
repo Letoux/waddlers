@@ -78,6 +78,7 @@ function toTableRow(
       minorUnitDivisor: normalized ? normalized.divisor.toNumber() : null,
     },
     values: buildValues(d, columns, period, today),
+    descriptionTruncated: row.descriptionTruncated,
   };
 }
 
@@ -128,7 +129,8 @@ export async function listSpacePositions(
     total: totals.total,
     hasMore: offset + rows.length < totals.total,
     period,
-    asOf: totals.computedAt?.toISOString() ?? null,
+    computedAt: totals.computedAt?.toISOString() ?? null,
+    oldestComputedAt: totals.oldestComputedAt?.toISOString() ?? null,
   };
 }
 

@@ -96,3 +96,43 @@ describe('DashboardLimiter', () => {
     expect(limiter.acquire('busy', 'summary').allowed).toBe(false);
   });
 });
+
+describe('per-procedure policy (positions.list: in-flight cap, no rate)', () => {
+  const policy = { maxConcurrent: 4, rated: false } as const;
+
+  it('caps at 4 in flight with its own cap and releases a slot on finish', () => {
+    const { limiter } = make();
+    const held = Array.from({ length: 4 }, () => limiter.acquire('u1', 'positions.list', policy));
+    expect(held.every((a) => a.allowed)).toBe(true);
+    expect(limiter.acquire('u1', 'positions.list', policy)).toEqual({
+      allowed: false,
+      retryAfterMs: 1000,
+    });
+    const first = held[0];
+    if (first?.allowed) first.release();
+    expect(limiter.acquire('u1', 'positions.list', policy).allowed).toBe(true);
+  });
+
+  it('has no rate limit: hundreds of sequential calls pass, and the shared bucket is untouched', () => {
+    const { limiter } = make({ ratePerMinute: 3 });
+    for (let i = 0; i < 300; i += 1) {
+      const a = limiter.acquire('u1', 'positions.list', policy);
+      expect(a.allowed).toBe(true);
+      if (a.allowed) a.release();
+    }
+    // The dashboard bucket (3) is still full: three summaries pass, the fourth is rate-limited.
+    for (let i = 0; i < 3; i += 1) {
+      const a = limiter.acquire('u1', 'summary');
+      expect(a.allowed).toBe(true);
+      if (a.allowed) a.release();
+    }
+    expect(limiter.acquire('u1', 'summary').allowed).toBe(false);
+  });
+
+  it('is counted per user and per procedure (a busy table does not block the dashboard)', () => {
+    const { limiter } = make();
+    for (let i = 0; i < 4; i += 1) limiter.acquire('u1', 'positions.list', policy);
+    expect(limiter.acquire('u2', 'positions.list', policy).allowed).toBe(true);
+    expect(limiter.acquire('u1', 'summary').allowed).toBe(true);
+  });
+});

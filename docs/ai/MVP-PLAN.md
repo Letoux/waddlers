@@ -1,6 +1,6 @@
 # Waddlers — MVP implementation plan
 
-Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1, S2, S3, S4 (EODHD adapter pending D1 checks); S5 backend done and fixed after review (`REVIEW-S5.md`, D23), S5 frontend done; S6 backend done (`BACKEND.md` "Table (S6)", not reviewed yet), S6 frontend next** (decisions: `docs/ai/BACKEND.md`, `docs/ai/FRONTEND.md`, `docs/ai/DOMAIN.md`; reviews: `docs/ai/REVIEW-S1.md` … `docs/ai/REVIEW-S5.md`; market data: `docs/ai/MARKET-DATA.md`).
+Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1, S2, S3, S4 (EODHD adapter pending D1 checks); S5 backend done and fixed after review (`REVIEW-S5.md`, D23), S5 frontend done; S6 backend done and fixed after review (`BACKEND.md` "Table (S6)", `REVIEW-S6.md`, D25, D26), S6 frontend next** (decisions: `docs/ai/BACKEND.md`, `docs/ai/FRONTEND.md`, `docs/ai/DOMAIN.md`; reviews: `docs/ai/REVIEW-S1.md` … `docs/ai/REVIEW-S5.md`; market data: `docs/ai/MARKET-DATA.md`).
 Source of truth remains `specs.md`; this file records the agreed decomposition and design.
 
 ## 1. Objective
@@ -61,7 +61,7 @@ Client code may import `contracts` and `domain` only (ESLint boundary rule). Rej
 
 ### Table (server-side, §20–22, §38)
 
-- `positions.list({ spaceId, period, search, sort, page, columns })` → `{ rows, total, hasMore, period, asOf }` (S6; `filters` join in S7). Built: see `BACKEND.md` "Table (S6)".
+- `positions.list({ spaceId, period, search, sort, page, columns })` → `{ rows, total, hasMore, period, computedAt, oldestComputedAt }` (S6; `filters` join in S7). Built: see `BACKEND.md` "Table (S6)".
 - Filters: Zod discriminated union (`between` numeric, `in` enum), `columnId` from a whitelist enum.
 - Column registry split: metadata in `contracts`, SQL mapping in `server`. `perf_period` resolves to `perf_{period}`. NULLS LAST, stable tiebreak, ILIKE + trigram search, offset pagination (limit ≤ 200).
 - Table config v1: ordered `{id, visible}[]`, optional sort/filters/density/pageSize; migrate on read; defaults from §18; reset deletes row.
@@ -152,6 +152,8 @@ Decided by the user on 2026-09-29:
 | D22 | FX in the chart | Decided 2026-09-30: **FX history is kept.** `dashboard.history` takes `fxMode: 'historical' \| 'current'` (default `historical`). `historical`: each point is converted at that day's stored rate, forward-filled within the FX tolerance. `current`: every point uses the latest rate per currency, label "au taux de change actuel", rate date returned. Each point carries the rate(s) applied (tooltip; `eurPerUnit` for the specs §34 display direction). A missing rate is never replaced by 1. The summary's current value keeps the latest rate; movers stay in local currency (D4). |
 | D23 | Dashboard value vs delta | The series ends with a terminal point at asOf built from exactly the inputs of the total (D21 end price × current-rule FX, same positions); chart end = headline end = total. If it cannot be complete, change carries its real toDate (or is null when the valued set differs) — never a delta mislabelled as current (2026-09-30) |
 | D24 | Default table columns | §18 set plus Quantité (editable, §33) and Valeur suivie (EUR); order: Société, Code, Cours EUR, Quantité, Valeur suivie, Capitalisation EUR, Secteur, Rendement du dividende, Performance période, Performance 12 mois, Performance 60 mois (2026-10-01) |
+| D25 | Table vs dashboard consistency | The table's Cours EUR and Valeur suivie use exactly the dashboard's current rule (D21 end price × newest rate in [spaceAsOf − 7 d, spaceAsOf], spaceAsOf = newest end-price date of the space's held positions), full precision before display rounding; Σ Valeur suivie (non-null rows) = dashboard total and null rows = dashboard missing (2026-10-01) |
+| D26 | Local-currency price not sortable | §22 lists "cours" as sortable; sorting raw GBX/USD/EUR amounts is meaningless, so the local price is not sortable and the UI sorts by Cours EUR instead (2026-10-01) |
 
 Non-blocking (can default and revisit):
 

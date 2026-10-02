@@ -2,6 +2,8 @@ export { isAvailable } from './availability';
 export { Decimal, parseDecimal, decimalToString, asDecimal } from './decimal';
 export {
   normalizeCurrency,
+  MINOR_UNITS,
+  UNSUPPORTED_MINOR_UNITS,
   normalizeMoney,
   assertReferenceCurrency,
   moneyFromStrings,

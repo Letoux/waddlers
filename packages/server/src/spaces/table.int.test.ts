@@ -1,4 +1,5 @@
 import {
+  INSTRUMENT_TYPE_LABELS,
   SORTABLE_COLUMN_IDS,
   TABLE_COLUMN_IDS,
   type MoneyCell,
@@ -18,7 +19,13 @@ import {
   useTestEnv,
 } from '../../test/auth-harness';
 import { createSpaceRow } from '../../test/space-fixtures';
-import { ensureExchanges, SORT_DATASET, seedEntries } from '../../test/table-fixtures';
+import {
+  DEFAULT_FX,
+  ensureExchanges,
+  SORT_DATASET,
+  seedEntries,
+  seedFx,
+} from '../../test/table-fixtures';
 
 const NOW = new Date('2026-09-30T12:00:00Z');
 const { rpc, loginAs } = createApp({ now: () => NOW });
@@ -37,6 +44,7 @@ beforeEach(async () => {
   const userId = (await createUser(getDb(), { username: 'alice', password: PASSWORD })).id;
   cookie = await loginAs('alice');
   await ensureExchanges();
+  await seedFx(DEFAULT_FX);
   spaceId = await createSpaceRow('PEA', [{ userId, role: 'viewer' }]);
   const positions = await seedEntries(spaceId, SORT_DATASET, NOW);
   ids = Object.fromEntries(SORT_DATASET.map((s, i) => [s.name, positions[i]!]));
@@ -60,10 +68,12 @@ function keyOf(
   id: SortableColumnId,
   row: PositionsListOutput['rows'][number],
 ): string | number | null {
+  if (id === 'quantity') return row.quantity === null ? null : Number(row.quantity);
   const v = cell(row, id);
   if (v === null) return null;
-  if (typeof v === 'string')
-    return /^-?\d+(\.\d+)?$/.test(v) && id === 'quantity' ? Number(v) : v.toLowerCase();
+  // instrument_type sorts by its French label (Action before ETF), not by the wire id.
+  if (id === 'instrument_type') return INSTRUMENT_TYPE_LABELS[v as 'stock' | 'etf'];
+  if (typeof v === 'string') return v.toLowerCase();
   if ('value' in v) return v.value === null ? null : Number((v as PerfCell).value);
   return (v as MoneyCell).amount === null ? null : Number((v as MoneyCell).amount);
 }
@@ -115,7 +125,7 @@ describe('default order and values', () => {
     ]);
   });
 
-  it('omitted columns return the default set only (no description unless asked)', async () => {
+  it('omitted columns return the default set only (no description unless asked, no quantity: row.quantity)', async () => {
     const res = await rpc('positions.list', { spaceId }, { cookie });
     const out = res.json as unknown as PositionsListOutput;
     expect(Object.keys(out.rows[0]!.values).sort()).toEqual(
@@ -123,7 +133,6 @@ describe('default order and values', () => {
         'name',
         'symbol',
         'price_eur',
-        'quantity',
         'tracked_value_eur',
         'market_cap_eur',
         'sector',
@@ -139,7 +148,7 @@ describe('default order and values', () => {
     const out = await list();
     const delta = out.rows.find((r) => r.id === ids.delta)!;
     expect(delta.quantity).toBeNull();
-    expect(cell(delta, 'quantity')).toBeNull();
+    expect(delta.values).not.toHaveProperty('quantity'); // row.quantity is the single source
     expect(cell<MoneyCell>(delta, 'tracked_value_eur')).toMatchObject({
       amount: null,
       reason: 'watchlist',
@@ -186,7 +195,7 @@ describe('default order and values', () => {
     const fox = out.rows.find((r) => r.id === ids.foxtrot)!;
     expect(cell<MoneyCell>(fox, 'price')).toMatchObject({ amount: null, reason: 'price_missing' });
     expect(cell<MoneyCell>(fox, 'tracked_value_eur').amount).toBeNull();
-    expect(cell(fox, 'quantity')).toBe('0'); // a real zero quantity stays 0
+    expect(fox.quantity).toBe('0'); // a real zero quantity stays 0
     const golf = out.rows.find((r) => r.id === ids.Golf)!;
     expect(cell<MoneyCell>(golf, 'price_eur')).toMatchObject({
       amount: null,
@@ -217,10 +226,24 @@ describe('default order and values', () => {
     ).toBe(true);
   });
 
-  it('asOf is the newest computed_at of the matching rows, null when none has metrics', async () => {
-    expect((await list()).asOf).toBe('2026-09-30T12:00:00.000Z');
-    expect((await list({ search: 'alpha' })).asOf).toBe('2026-09-30T08:00:00.000Z');
-    expect((await list({ search: 'GGG' })).asOf).toBeNull();
+  it('computedAt is the newest computed_at of the matching rows, oldestComputedAt the oldest, null when none has metrics', async () => {
+    const all = await list();
+    expect(all.computedAt).toBe('2026-09-30T12:00:00.000Z');
+    expect(all.oldestComputedAt).toBe('2026-09-30T08:00:00.000Z'); // Alpha
+    expect(all).not.toHaveProperty('asOf'); // renamed (S6 review F7)
+    expect(await list({ search: 'alpha' })).toMatchObject({
+      computedAt: '2026-09-30T08:00:00.000Z',
+      oldestComputedAt: '2026-09-30T08:00:00.000Z',
+    });
+    // hotel (11:00) is the oldest once Alpha is out of the match; Golf has no metrics row.
+    expect(await list({ search: 'tech' })).toMatchObject({
+      computedAt: '2026-09-30T12:00:00.000Z',
+      oldestComputedAt: '2026-09-30T11:00:00.000Z',
+    });
+    expect(await list({ search: 'GGG' })).toMatchObject({
+      computedAt: null,
+      oldestComputedAt: null,
+    });
   });
 });
 
