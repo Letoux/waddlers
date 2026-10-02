@@ -1,6 +1,6 @@
 # Waddlers — MVP implementation plan
 
-Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1, S2, S3, S4 (EODHD adapter pending D1 checks); S5 backend done and fixed after review (`REVIEW-S5.md`, D23), S5 frontend done; S6 backend done and fixed after review (`BACKEND.md` "Table (S6)", `REVIEW-S6.md`, D25, D26), S6 frontend next** (decisions: `docs/ai/BACKEND.md`, `docs/ai/FRONTEND.md`, `docs/ai/DOMAIN.md`; reviews: `docs/ai/REVIEW-S1.md` … `docs/ai/REVIEW-S5.md`; market data: `docs/ai/MARKET-DATA.md`).
+Status: **approved decisions D1–D11 recorded 2026-09-29 (§7); non-blocking items still open**. Produced 2026-09-29 by `/plan` (planner + architect, Opus). **Done: S0, S1, S2, S3, S4 (EODHD adapter pending D1 checks), S5 (`REVIEW-S5.md`, D22, D23), S6 (`BACKEND.md` / `FRONTEND.md` "Table (S6)", `REVIEW-S6.md`, D24–D26); next: S7** (decisions: `docs/ai/BACKEND.md`, `docs/ai/FRONTEND.md`, `docs/ai/DOMAIN.md`; reviews: `docs/ai/REVIEW-S1.md` … `docs/ai/REVIEW-S5.md`; market data: `docs/ai/MARKET-DATA.md`).
 Source of truth remains `specs.md`; this file records the agreed decomposition and design.
 
 ## 1. Objective
