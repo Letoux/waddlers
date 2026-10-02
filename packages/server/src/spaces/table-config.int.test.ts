@@ -92,6 +92,15 @@ describe('get, save, reset', () => {
     expect(await getDb().select().from(tableConfigs)).toHaveLength(1);
   });
 
+  it('saving a config equal to the defaults is a saved view: isDefault is false until reset', async () => {
+    const saved = await save(pea, defaultTableConfig(), aliceCookie);
+    expect(saved.json).toEqual({ config: defaultTableConfig(), isDefault: false });
+    expect(await get(pea, aliceCookie)).toEqual({ config: defaultTableConfig(), isDefault: false });
+    expect(await getDb().select().from(tableConfigs)).toHaveLength(1);
+    await call('tableConfig.reset', { spaceId: pea }, aliceCookie);
+    expect((await get(pea, aliceCookie)).isDefault).toBe(true);
+  });
+
   it('reset deletes the row and returns the defaults; it is idempotent', async () => {
     await save(pea, config('symbol'), aliceCookie);
     const res = await call('tableConfig.reset', { spaceId: pea }, aliceCookie);

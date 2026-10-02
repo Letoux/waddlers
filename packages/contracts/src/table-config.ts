@@ -23,9 +23,18 @@ export const TABLE_DENSITIES = ['comfortable', 'compact'] as const;
 export const TABLE_PAGE_SIZES = [25, 50, 100, 200] as const;
 export const DEFAULT_TABLE_DENSITY = 'comfortable';
 export const DEFAULT_TABLE_PAGE_SIZE = 50;
-/** Hard bound of the stored document (a CHECK on the column); a registry-sized config is ~2 KB. */
+/**
+ * Hard bound of the stored document: a CHECK on `pg_column_size(config)`, which is the jsonb
+ * (binary) size, NOT the JSON text length. A registry-sized config is ~2 KB of JSON.
+ */
 export const TABLE_CONFIG_MAX_BYTES = 16_384;
-/** Bound of what `save` accepts (JSON bytes): below the CHECK so migrate-on-read can append columns. */
+/**
+ * Bound of what `save` accepts, in UTF-8 bytes of the JSON text. The 4 384-byte margin below the
+ * CHECK is jsonb overhead, measured at about 750 bytes for the largest valid document (per-entry
+ * headers and number/length encoding), plus headroom; it is NOT room for migrate-on-read (migration
+ * runs in memory and the stored row is only rewritten by a `save`, which re-validates this bound).
+ * An integration test saves the largest valid document and checks it fits the CHECK.
+ */
 export const TABLE_CONFIG_MAX_SAVE_BYTES = 12_000;
 
 export const tableConfigColumnSchema = z.object({ id: tableColumnIdSchema, visible: z.boolean() });

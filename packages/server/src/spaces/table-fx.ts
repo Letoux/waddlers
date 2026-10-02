@@ -98,3 +98,15 @@ export function eurRate(fx: CurrentFxRates): SQL {
 export function priceEurSql(rate: SQL): SQL {
   return sql`case when ${m.price} > 0 and ${rate} > 0 then ${m.price} / ${priceDivisor} / ${rate} end`;
 }
+
+/**
+ * The wire value of a numeric expression, in SQL: rounded to 8 decimals HALF-EVEN, exactly like
+ * `wire()` of the dashboard (`toDecimalPlaces(8)` under the domain's ROUND_HALF_EVEN). PostgreSQL's
+ * `round` is half away from zero, which differs on an exact tie only: ties are rewritten as
+ * `2 * round(n / 2)` (n / 2 lands on x.25 or x.75, never on a tie), which is the even neighbour.
+ * Filters compare THIS value, so a filter agrees with the number the cell shows.
+ */
+export function wire8Sql(expr: SQL | AnyColumn): SQL {
+  const scaled = sql`(${expr} * 100000000)`;
+  return sql`(case when abs(${scaled} - trunc(${scaled})) = 0.5 then (2 * round(${scaled} / 2)) / 100000000 else round(${expr}, 8) end)`;
+}

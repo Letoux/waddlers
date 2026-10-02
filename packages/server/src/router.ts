@@ -6,14 +6,23 @@ import {
   DASHBOARD_MAX_CONCURRENT,
   DASHBOARD_RATE_PER_MINUTE,
   DashboardLimiter,
+  POSITIONS_FACETS_MAX_CONCURRENT,
   POSITIONS_LIST_MAX_CONCURRENT,
+  TABLE_CONFIG_SAVE_BURST,
+  TABLE_CONFIG_SAVE_MAX_CONCURRENT,
+  TABLE_CONFIG_SAVE_RATE_PER_MINUTE,
   retryAfterSeconds,
   type AdmissionPolicy,
 } from './dashboard/limiter';
 import { getHistory, getMovers, getSummary, type DashboardDeps } from './dashboard/service';
 import { FX_TOLERANCE_DAYS } from './market-data/config';
 import { requireSpaceAccess } from './spaces/access';
-import { getTableConfig, resetTableConfig, saveTableConfig } from './spaces/table-config';
+import {
+  getTableConfig,
+  resetTableConfig,
+  saveTableConfig,
+  TableConfigNewerVersionError,
+} from './spaces/table-config';
 import { getPositionFacets } from './spaces/table-facets';
 import {
   getSpace,
@@ -88,6 +97,8 @@ export interface RouterDeps {
   passwordLimiter?: LoginRateLimiter;
   /** Per-user admission of dashboard.summary/history (concurrency + rate). Injectable for tests. */
   dashboardLimiter?: DashboardLimiter;
+  /** Per-user token bucket of tableConfig.save (30/min, burst 10). Injectable for tests. */
+  tableConfigLimiter?: DashboardLimiter;
   clientIp?: AuthDeps['clientIp'];
   authSecret?: AuthDeps['authSecret'];
   /** Test seam: replaces the cookie-to-session lookup. Production always uses the database. */
@@ -107,6 +118,15 @@ const sharedDashboardLimiter = ((globalThis as Record<symbol, unknown>)[LIMITER_
     ratePerMinute: DASHBOARD_RATE_PER_MINUTE,
   })) as DashboardLimiter;
 
+/** Per-user token bucket of `tableConfig.save` (S7, audit F2): its own limiter, so saves never eat the dashboard's budget. */
+const SAVE_LIMITER_KEY = Symbol.for('waddlers.tableConfigSaveLimiter');
+const sharedTableConfigLimiter = ((globalThis as Record<symbol, unknown>)[SAVE_LIMITER_KEY] ??=
+  new DashboardLimiter({
+    maxConcurrent: TABLE_CONFIG_SAVE_MAX_CONCURRENT,
+    ratePerMinute: TABLE_CONFIG_SAVE_RATE_PER_MINUTE,
+    burst: TABLE_CONFIG_SAVE_BURST,
+  })) as DashboardLimiter;
+
 export function createRouter({
   checkDb = checkDatabase,
   now = () => new Date(),
@@ -115,6 +135,7 @@ export function createRouter({
   loginLimiter = new LoginRateLimiter(),
   passwordLimiter = new LoginRateLimiter(),
   dashboardLimiter = sharedDashboardLimiter,
+  tableConfigLimiter = sharedTableConfigLimiter,
   clientIp = (headers) => clientIpFrom(headers, getEnv().TRUSTED_PROXY_HEADER),
   authSecret = () => getEnv().AUTH_SECRET,
   authenticate: resolveAuth,
@@ -173,13 +194,14 @@ export function createRouter({
    */
   const admitted = async <T>(
     userId: string,
-    procedure: 'summary' | 'history' | 'positions.list',
+    procedure: 'summary' | 'history' | 'positions.list' | 'positions.facets' | 'tableConfig.save',
     ctx: RpcContext,
     errors: { TOO_MANY_REQUESTS: (options: { data: { retryAfterSeconds: number } }) => Error },
     run: () => Promise<T>,
     policy?: AdmissionPolicy,
+    limiter: DashboardLimiter = dashboardLimiter,
   ): Promise<T> => {
-    const admission = dashboardLimiter.acquire(userId, procedure, policy);
+    const admission = limiter.acquire(userId, procedure, policy);
     if (!admission.allowed) {
       const seconds = retryAfterSeconds(admission.retryAfterMs);
       ctx.resHeaders?.set('retry-after', String(seconds));
@@ -240,8 +262,16 @@ export function createRouter({
         ),
       ),
       // Space-wide choices of the enum filters (S7): every member may read them, like the list itself.
-      facets: spaceScoped('viewer').positions.facets.handler(({ context }) =>
-        getPositionFacets(deps.getDb(), context.space),
+      // Same in-flight cap as the list (4 per user, unrated, own counter).
+      facets: spaceScoped('viewer').positions.facets.handler(({ context, errors }) =>
+        admitted(
+          context.session.user.id,
+          'positions.facets',
+          context,
+          errors,
+          () => getPositionFacets(deps.getDb(), context.space),
+          { maxConcurrent: POSITIONS_FACETS_MAX_CONCURRENT, rated: false },
+        ),
       ),
       setQuantity: spaceScoped('editor').positions.setQuantity.handler(({ context, input }) =>
         setPositionQuantity(deps.getDb(), context.space, input.positionId, input.quantity),
@@ -256,8 +286,24 @@ export function createRouter({
       get: spaceScoped('viewer').tableConfig.get.handler(({ context }) =>
         getTableConfig(deps.getDb(), context.space),
       ),
-      save: spaceScoped('viewer').tableConfig.save.handler(({ context, input }) =>
-        saveTableConfig(deps.getDb(), context.space, input.config),
+      // Token bucket (30/min, burst 10) after the access check: a debounced UI never reaches it.
+      save: spaceScoped('viewer').tableConfig.save.handler(({ context, input, errors }) =>
+        admitted(
+          context.session.user.id,
+          'tableConfig.save',
+          context,
+          errors,
+          async () => {
+            try {
+              return await saveTableConfig(deps.getDb(), context.space, input.config);
+            } catch (error) {
+              if (error instanceof TableConfigNewerVersionError) throw errors.CONFLICT();
+              throw error;
+            }
+          },
+          undefined,
+          tableConfigLimiter,
+        ),
       ),
       reset: spaceScoped('viewer').tableConfig.reset.handler(({ context }) =>
         resetTableConfig(deps.getDb(), context.space),

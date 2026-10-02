@@ -23,6 +23,7 @@ export * from './filters';
 export * from './table';
 export * from './table-config';
 export * from './table-facets';
+export * from './text';
 export * from './table-reasons';
 
 /** Browser-safe oRPC contract. Never import server code here. */
@@ -245,8 +246,9 @@ export const tooManyRequestsError = {
  * Error codes the UI must handle:
  * - UNAUTHORIZED: bad credentials (login) or no/expired session (everything else);
  * - TOO_MANY_REQUESTS: login/changePassword throttled, or dashboard.summary/history over the per-user
- *   concurrency/rate cap, or positions.list over its 4 concurrent calls per user, with no rate limit
- *   (retry after `data.retryAfterSeconds`);
+ *   concurrency/rate cap, or positions.list / positions.facets over their 4 concurrent calls per
+ *   user (no rate limit), or tableConfig.save over ~30 a minute (retry after `data.retryAfterSeconds`);
+ * - CONFLICT: tableConfig.save over a view stored by a newer app version (typed, 409);
  * - INVALID_CURRENT_PASSWORD: changePassword with a wrong current password (session stays valid);
  * - BAD_REQUEST: input failed validation (never render `message`/`issues` raw);
  * - NOT_FOUND: space-scoped procedures, for a space the caller cannot access AND for a space or
@@ -286,7 +288,10 @@ export const contract = {
       .output(positionsListOutputSchema)
       .errors({ TOO_MANY_REQUESTS: tooManyRequestsError }),
     /** Choices (with counts) of the enum filters over the whole space (S7); PostgreSQL only. */
-    facets: oc.input(positionsFacetsInputSchema).output(positionsFacetsOutputSchema),
+    facets: oc
+      .input(positionsFacetsInputSchema)
+      .output(positionsFacetsOutputSchema)
+      .errors({ TOO_MANY_REQUESTS: tooManyRequestsError }),
     /** owner/editor only. `quantity: null` turns the entry into a watchlist entry. */
     setQuantity: oc
       .input(setQuantityInputSchema)
@@ -301,8 +306,18 @@ export const contract = {
   tableConfig: {
     /** Migrated on read; `isDefault` when nothing is saved (D24 defaults). */
     get: oc.input(tableConfigGetInputSchema).output(tableConfigOutputSchema),
-    /** Replaces the whole config (strict validation). Returns what `get` will return. */
-    save: oc.input(tableConfigSaveInputSchema).output(tableConfigOutputSchema),
+    /**
+     * Replaces the whole config (strict validation, last write wins). Returns what it wrote.
+     * 429: more than ~30 saves a minute (burst 10) per user. 409: the stored view was written by a
+     * NEWER app version (a rollback must not overwrite it).
+     */
+    save: oc
+      .input(tableConfigSaveInputSchema)
+      .output(tableConfigOutputSchema)
+      .errors({
+        TOO_MANY_REQUESTS: tooManyRequestsError,
+        CONFLICT: { status: 409, message: 'Table config written by a newer version' },
+      }),
     /** Deletes the saved row: back to the defaults. Idempotent. */
     reset: oc.input(tableConfigGetInputSchema).output(tableConfigOutputSchema),
   },

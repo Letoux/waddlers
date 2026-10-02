@@ -3,6 +3,8 @@ export interface DashboardLimiterOptions {
   maxConcurrent: number;
   /** Sustained rate per user (token bucket, capacity = one minute of it). */
   ratePerMinute: number;
+  /** Bucket capacity (burst). Default: one minute of the rate. */
+  burst?: number;
   /** Soft cap on tracked users (memory); only idle users with a full bucket are evicted. */
   maxKeys?: number;
   now?: () => number;
@@ -23,6 +25,12 @@ export const DASHBOARD_MAX_CONCURRENT = 2;
 /** `positions.list` (S6): at most this many calls of one user in flight, NO rate limit (typing, sorting, paging). */
 export const POSITIONS_LIST_MAX_CONCURRENT = 4;
 export const DASHBOARD_RATE_PER_MINUTE = 30;
+/** `positions.facets` (S7): same in-flight cap as `positions.list`, unrated. */
+export const POSITIONS_FACETS_MAX_CONCURRENT = 4;
+/** `tableConfig.save` (S7, audit F2): 30 writes a minute per user, burst 10 (a debounced UI never gets near it). */
+export const TABLE_CONFIG_SAVE_RATE_PER_MINUTE = 30;
+export const TABLE_CONFIG_SAVE_BURST = 10;
+export const TABLE_CONFIG_SAVE_MAX_CONCURRENT = 2;
 
 interface Entry {
   tokens: number;
@@ -43,10 +51,12 @@ interface Entry {
 export class DashboardLimiter {
   private readonly entries = new Map<string, Entry>();
   private readonly maxKeys: number;
+  private readonly capacity: number;
   private readonly now: () => number;
 
   constructor(private readonly options: DashboardLimiterOptions) {
     this.maxKeys = options.maxKeys ?? 10_000;
+    this.capacity = options.burst ?? options.ratePerMinute;
     this.now = options.now ?? Date.now;
   }
 
@@ -79,7 +89,8 @@ export class DashboardLimiter {
   }
 
   private entryFor(userId: string, now: number): Entry {
-    const capacity = this.options.ratePerMinute;
+    const capacity = this.capacity;
+    const rate = this.options.ratePerMinute;
     let entry = this.entries.get(userId);
     if (entry === undefined) {
       if (this.entries.size >= this.maxKeys) this.evict(now);
@@ -87,16 +98,16 @@ export class DashboardLimiter {
       this.entries.set(userId, entry);
       return entry;
     }
-    entry.tokens = Math.min(capacity, entry.tokens + ((now - entry.updatedAt) * capacity) / 60_000);
+    entry.tokens = Math.min(capacity, entry.tokens + ((now - entry.updatedAt) * rate) / 60_000);
     entry.updatedAt = now;
     return entry;
   }
 
   /** Drops users with nothing running and a full bucket (forgetting them changes nothing for them). */
   private evict(now: number): void {
-    const capacity = this.options.ratePerMinute;
+    const capacity = this.capacity;
     for (const [key, entry] of this.entries) {
-      const tokens = entry.tokens + ((now - entry.updatedAt) * capacity) / 60_000;
+      const tokens = entry.tokens + ((now - entry.updatedAt) * this.options.ratePerMinute) / 60_000;
       if (entry.inFlight.size === 0 && tokens >= capacity) this.entries.delete(key);
     }
   }

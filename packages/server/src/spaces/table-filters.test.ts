@@ -3,15 +3,18 @@ import {
   IN_FILTER_COLUMN_IDS,
   TABLE_COLUMNS,
   compareDecimalStrings,
+  defaultTableConfig,
   filterSchema,
   filtersSchema,
   positionsListInputSchema,
+  positionsSearchSchema,
+  tableConfigSaveInputSchema,
   type Filter,
 } from '@waddlers/contracts';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import { columnSql } from './table-columns';
-import { filterPredicates } from './table-filters';
+import { FX_FILTER_COLUMNS, filterPredicates, filtersNeedFx } from './table-filters';
 import { sql } from 'drizzle-orm';
 
 const SPACE = '11111111-1111-4111-8111-111111111111';
@@ -19,6 +22,35 @@ const ctx = { period: '1m' as const, fxRate: sql`1::numeric` };
 const dialect = new PgDialect();
 const render = (filters: Filter[]) =>
   filterPredicates(filters, ctx).map((p) => dialect.sqlToQuery(p));
+
+describe('ill-formed text (audit F1: lone UTF-16 surrogates)', () => {
+  const lone = ['\uD800', 'a\uDC00b', '\uD83D', 'ok\uDBFF'];
+  it('refuses a lone surrogate in an `in` value, accepts a real surrogate pair', () => {
+    for (const v of lone) {
+      expect(
+        filterSchema.safeParse({ kind: 'in', columnId: 'sector', values: [v] }).success,
+        JSON.stringify(v),
+      ).toBe(false);
+    }
+    expect(
+      filterSchema.safeParse({ kind: 'in', columnId: 'sector', values: ['Santé 😀'] }).success,
+    ).toBe(true);
+  });
+  it('applies the same rule to the search input', () => {
+    for (const v of lone) expect(positionsSearchSchema.safeParse(v).success).toBe(false);
+    expect(positionsSearchSchema.safeParse('hermès 😀').success).toBe(true);
+    expect(positionsSearchSchema.safeParse('a\u0000b').success).toBe(false);
+  });
+  it('is refused inside a saved config too', () => {
+    const cfg = {
+      ...defaultTableConfig(),
+      filters: [{ kind: 'in', columnId: 'sector', values: ['\uD800'] }],
+    };
+    expect(tableConfigSaveInputSchema.safeParse({ spaceId: SPACE, config: cfg }).success).toBe(
+      false,
+    );
+  });
+});
 
 describe('filter schema', () => {
   it('accepts an `in` filter on each enum column with its domain', () => {
@@ -205,5 +237,31 @@ describe('filter SQL builder', () => {
     expect(forged({ kind: 'between', columnId: 'name; drop', min: '1' })).toThrow(/not filterable/);
     expect(forged({ kind: 'in', columnId: 'perf_1y', values: ['a'] })).toThrow(/not filterable/);
     expect(forged({ kind: 'between', columnId: 'perf_1y' })).toThrow(/bound/);
+  });
+});
+
+describe('FX join only when needed (review P3-7)', () => {
+  const probe = { period: '1m' as const, fxRate: sql`__FX_RATE__` };
+  const filterFor = (columnId: string): Filter =>
+    (IN_FILTER_COLUMN_IDS as readonly string[]).includes(columnId)
+      ? ({ kind: 'in', columnId, values: ['EUR'] } as Filter)
+      : ({ kind: 'between', columnId, min: '1' } as Filter);
+
+  it('FX_FILTER_COLUMNS is exactly the filterable columns whose SQL reads the rate', () => {
+    const ids = [...IN_FILTER_COLUMN_IDS, ...BETWEEN_FILTER_COLUMN_IDS];
+    const reading = ids.filter((id) =>
+      filterPredicates([filterFor(id)], probe)
+        .map((p) => dialect.sqlToQuery(p).sql)
+        .join(' ')
+        .includes('__FX_RATE__'),
+    );
+    expect(new Set(reading)).toEqual(FX_FILTER_COLUMNS);
+  });
+  it('filtersNeedFx is true only for a money filter', () => {
+    expect(filtersNeedFx(undefined)).toBe(false);
+    expect(filtersNeedFx([])).toBe(false);
+    expect(filtersNeedFx([filterFor('perf_1y'), filterFor('currency')])).toBe(false);
+    expect(filtersNeedFx([filterFor('perf_1y'), filterFor('price_eur')])).toBe(true);
+    expect(filtersNeedFx([filterFor('tracked_value_eur')])).toBe(true);
   });
 });

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { tableColumnIdSchema, tableSortSchema } from './columns';
 import { dashboardPeriodSchema } from './dashboard';
 import { filtersSchema } from './filters';
+import { isStorableText } from './text';
 
 /**
  * `positions.list` table additions (S6). Numbers are plain decimal strings (never floats);
@@ -87,11 +88,11 @@ export type TableValues = z.infer<typeof tableValuesSchema>;
 export const DESCRIPTION_PREVIEW_CHARS = 280;
 
 export const POSITIONS_SEARCH_MAX = 100;
-/** Free text; `%`, `_` and `\` are literal. NUL is refused (PostgreSQL text cannot hold it). */
+/** Free text; `%`, `_` and `\` are literal. NUL and lone UTF-16 surrogates are refused (PostgreSQL text cannot hold them). */
 export const positionsSearchSchema = z
   .string()
   .max(POSITIONS_SEARCH_MAX)
-  .refine((s) => !s.includes('\u0000'), 'Recherche invalide.');
+  .refine(isStorableText, 'Recherche invalide.');
 
 /** Optional fields of `positions.list` added by S6 and S7 (all additive). */
 export const positionsTableInputFields = {

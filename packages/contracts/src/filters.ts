@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isStorableText } from './text';
 import {
   BETWEEN_FILTER_COLUMN_IDS,
   IN_FILTER_COLUMN_IDS,
@@ -11,8 +12,10 @@ import {
  * At most one filter per column (a second range on the same column is a client bug, not a feature).
  *
  * - `in`: enum columns (type, sector, currency, exchange). The value is compared EXACTLY (case
- *   included) with the stored one; `instrument_type` takes `stock | etf`, `currency` the listing's
- *   RAW currency (`GBX` stays `GBX`), `exchange` the MIC (`XPAR`), `sector` the stored sector text.
+ *   included) with the stored one; `instrument_type` takes `stock | etf`, `currency` the MAJOR
+ *   currency (D28: `GBP` matches GBX/GBp listings, `ZAR` matches ZAc; the Devise cell keeps the raw
+ *   spelling), `exchange` the MIC (`XPAR`), `sector` the stored sector text. Values are refused
+ *   when they contain NUL or a lone UTF-16 surrogate.
  * - `between`: numeric columns, inclusive bounds, plain decimal strings (no exponent, no floats).
  *   Percent columns (every `perf_*`) take PERCENT units: `10` means 10 %. Money columns
  *   (`price_eur`, `tracked_value_eur`) take euros.
@@ -53,8 +56,11 @@ const betweenColumnIdSchema = z.enum(
   BETWEEN_FILTER_COLUMN_IDS as unknown as [BetweenFilterColumnId, ...BetweenFilterColumnId[]],
 );
 
-const noNul = (s: string) => !s.includes('\u0000');
-const valueSchema = z.string().min(1).max(FILTER_VALUE_MAX_CHARS).refine(noNul, 'Valeur invalide.');
+const valueSchema = z
+  .string()
+  .min(1)
+  .max(FILTER_VALUE_MAX_CHARS)
+  .refine(isStorableText, 'Valeur invalide.');
 
 /** Closed or formatted domains: `instrument_type` is a closed list, currency and MIC have a fixed shape. */
 const VALUE_DOMAIN: Record<string, RegExp> = {

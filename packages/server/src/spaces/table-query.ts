@@ -15,7 +15,7 @@ import {
   sectorExpr,
   type ColumnSqlContext,
 } from './table-columns';
-import { filterPredicates } from './table-filters';
+import { filterPredicates, filtersNeedFx } from './table-filters';
 import { currentFxRates, eurRate, priceMajorCurrency } from './table-fx';
 import type { TableRowData } from './table-cells';
 
@@ -63,13 +63,22 @@ function whereClause(
   return and(...parts, ...filterPredicates(filters, ctx)) as SQL;
 }
 
+/**
+ * The per-request SQL context of a table read: the D25 FX rates of the space and the column
+ * expressions' context. ONE definition for the page query and the totals query, so the two cannot
+ * drift (they must agree on every row, the filters included).
+ */
+export function tableContext(db: DbExecutor, space: AuthorizedSpace, period: DashboardPeriod) {
+  const fx = currentFxRates(db, space);
+  return { fx, ctx: { period, fxRate: eurRate(fx) } satisfies ColumnSqlContext };
+}
+
 export async function queryTablePage(
   db: DbExecutor,
   space: AuthorizedSpace,
   q: TableQuery,
 ): Promise<TablePositionRow[]> {
-  const fx = currentFxRates(db, space);
-  const ctx = { period: q.period, fxRate: eurRate(fx) };
+  const { fx, ctx } = tableContext(db, space, q.period);
   const cols = columnSql(ctx);
   const rows = await db
     .select({
@@ -183,10 +192,9 @@ export async function queryTableTotals(
   filters: readonly Filter[] | undefined,
   period: DashboardPeriod,
 ): Promise<{ total: number; computedAt: Date | null; oldestComputedAt: Date | null }> {
-  // The EUR rate is needed by the `price_eur` / `tracked_value_eur` filters (same D25 rule as the page).
-  const fx = currentFxRates(db, space);
-  const ctx = { period, fxRate: eurRate(fx) };
-  const [row] = await db
+  // The FX rates are joined only when a money filter reads them: the other filters (and no filter at all) never do.
+  const { fx, ctx } = tableContext(db, space, period);
+  const base = db
     .select({
       total: sql<number>`count(*)::int`,
       computedAt: sql<Date | null>`max(${m.computedAt})`.mapWith(toDate),
@@ -196,9 +204,11 @@ export async function queryTableTotals(
     .innerJoin(instruments, eq(instruments.id, spacePositions.instrumentId))
     .innerJoin(listings, eq(listings.id, spacePositions.listingId))
     .innerJoin(exchanges, eq(exchanges.mic, listings.exchangeMic))
-    .leftJoin(m, eq(m.listingId, listings.id))
-    .leftJoin(fx, eq(fx.currency, priceMajorCurrency))
-    .where(whereClause(space, search, filters, ctx));
+    .leftJoin(m, eq(m.listingId, listings.id));
+  const where = whereClause(space, search, filters, ctx);
+  const [row] = filtersNeedFx(filters)
+    ? await base.leftJoin(fx, eq(fx.currency, priceMajorCurrency)).where(where)
+    : await base.where(where);
   return {
     total: row?.total ?? 0,
     computedAt: row?.computedAt ?? null,

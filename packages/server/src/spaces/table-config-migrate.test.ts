@@ -1,12 +1,13 @@
 import {
   DEFAULT_TABLE_COLUMNS,
   TABLE_COLUMN_IDS,
+  TABLE_CONFIG_VERSION,
   defaultTableConfig,
   tableConfigSaveInputSchema,
   tableConfigV1Schema,
 } from '@waddlers/contracts';
 import { describe, expect, it } from 'vitest';
-import { migrateTableConfig } from './table-config-migrate';
+import { isNewerTableConfigVersion, migrateTableConfig } from './table-config-migrate';
 
 const SPACE = '11111111-1111-4111-8111-111111111111';
 const visibleIds = (c: ReturnType<typeof migrateTableConfig>) =>
@@ -139,6 +140,53 @@ describe('migrateTableConfig', () => {
   });
 });
 
+describe('version dispatch', () => {
+  const stored = {
+    columns: [
+      { id: 'symbol', visible: true },
+      { id: 'name', visible: true },
+    ],
+    sort: { columnId: 'perf_1y', direction: 'desc' },
+    density: 'compact',
+  };
+  it('version 0 (legacy) runs the chain and yields the current shape', () => {
+    const out = migrateTableConfig(stored, 0);
+    expect(tableConfigV1Schema.safeParse(out).success).toBe(true);
+    expect(visibleIds(out)).toEqual(['symbol', 'name']);
+    expect(out.sort).toEqual({ columnId: 'perf_1y', direction: 'desc' });
+    expect(out.density).toBe('compact');
+  });
+  it('the current version and an omitted version agree with version 0 for a V1-shaped document', () => {
+    expect(migrateTableConfig(stored, TABLE_CONFIG_VERSION)).toEqual(migrateTableConfig(stored, 0));
+    expect(migrateTableConfig(stored)).toEqual(migrateTableConfig(stored, 0));
+  });
+  it('version 2 (newer than any step) and 99 are read best-effort, never thrown on', () => {
+    for (const version of [2, 99]) {
+      const out = migrateTableConfig({ ...stored, futureField: { a: 1 } }, version);
+      expect(tableConfigV1Schema.safeParse(out).success).toBe(true);
+      expect(visibleIds(out)).toEqual(['symbol', 'name']);
+      expect(isNewerTableConfigVersion(version)).toBe(true);
+    }
+    expect(isNewerTableConfigVersion(TABLE_CONFIG_VERSION)).toBe(false);
+    expect(isNewerTableConfigVersion(0)).toBe(false);
+  });
+  it('a nonsense version (negative, fractional, NaN) is treated as 0', () => {
+    for (const version of [-3, 1.5, Number.NaN]) {
+      expect(migrateTableConfig(stored, version)).toEqual(migrateTableConfig(stored, 0));
+    }
+  });
+});
+
+describe('D28 currency filters in a stored config', () => {
+  it('maps minor-unit spellings to the major currency and de-duplicates', () => {
+    const out = migrateTableConfig({
+      columns: [{ id: 'name', visible: true }],
+      filters: [{ kind: 'in', columnId: 'currency', values: ['GBX', 'GBP', 'EUR'] }],
+    });
+    expect(out.filters).toEqual([{ kind: 'in', columnId: 'currency', values: ['GBP', 'EUR'] }]);
+  });
+});
+
 describe('save input (strict)', () => {
   const ok = { spaceId: SPACE, config: defaultTableConfig() };
   it('accepts the defaults', () => {
@@ -175,15 +223,15 @@ describe('save input (strict)', () => {
     expect(tableConfigSaveInputSchema.safeParse(cfg({ density: 'x' })).success).toBe(false);
   });
   it('bounds the size: a config of many long filter values is refused', () => {
-    const filters = Array.from({ length: 4 }, (_, i) => ({
+    const sector = {
       kind: 'in' as const,
-      columnId: (['sector', 'currency', 'exchange', 'instrument_type'] as const)[i]!,
+      columnId: 'sector' as const,
       values: Array.from(
         { length: 50 },
         (_, j) => `${'€'.repeat(98)}${String(j).padStart(2, '0')}`,
       ),
-    }));
-    const big = { spaceId: SPACE, config: { ...defaultTableConfig(), filters: [filters[0]!] } };
+    };
+    const big = { spaceId: SPACE, config: { ...defaultTableConfig(), filters: [sector] } };
     expect(tableConfigSaveInputSchema.safeParse(big).success).toBe(false);
   });
 });

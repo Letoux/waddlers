@@ -2,6 +2,7 @@ import {
   DEFAULT_TABLE_DENSITY,
   DEFAULT_TABLE_PAGE_SIZE,
   FILTERS_MAX,
+  TABLE_CONFIG_VERSION,
   TABLE_COLUMN_IDS,
   TABLE_DENSITIES,
   TABLE_PAGE_SIZES,
@@ -14,6 +15,7 @@ import {
   type TableConfigV1,
   type TableColumnId,
 } from '@waddlers/contracts';
+import { MINOR_UNITS } from '@waddlers/domain';
 
 /**
  * Migrate on read (S7, REVIEW-S6 F9): turns whatever is stored (an older version, a column that
@@ -27,6 +29,7 @@ import {
  * - sort: kept only if it is still a valid sortable column + direction;
  * - filters: each one kept only if it still validates (so a now-non-filterable column or a broken
  *   bound is dropped), one per column (first wins), at most `FILTERS_MAX`;
+ * - a `currency` filter value that is a minor-unit spelling becomes its major currency (D28);
  * - density / pageSize: kept only if valid, else the default.
  */
 
@@ -50,6 +53,13 @@ function migrateColumns(raw: unknown): TableConfigColumn[] {
   return out;
 }
 
+/** D28: a currency filter saved with a raw spelling (`GBX`) now means its major currency (`GBP`). */
+function toMajorCurrencies(filter: Filter): Filter {
+  if (filter.kind !== 'in' || filter.columnId !== 'currency') return filter;
+  const values = filter.values.map((v) => (Object.hasOwn(MINOR_UNITS, v) ? MINOR_UNITS[v]![0] : v));
+  return { ...filter, values: [...new Set(values)] };
+}
+
 function migrateFilters(raw: unknown): Filter[] {
   const out: Filter[] = [];
   const seen = new Set<string>();
@@ -58,13 +68,14 @@ function migrateFilters(raw: unknown): Filter[] {
     const parsed = filterSchema.safeParse(item);
     if (!parsed.success || seen.has(parsed.data.columnId)) continue;
     seen.add(parsed.data.columnId);
-    out.push(parsed.data);
+    out.push(toMajorCurrencies(parsed.data));
     if (out.length === FILTERS_MAX) break;
   }
   return out;
 }
 
-export function migrateTableConfig(raw: unknown): TableConfigV1 {
+/** The V1 normaliser: whatever the document is, the result is a valid `TableConfigV1`. */
+function normaliseV1(raw: unknown): TableConfigV1 {
   const doc = isRecord(raw) ? raw : {};
   const sort = tableSortSchema.safeParse(doc.sort);
   const density = (TABLE_DENSITIES as readonly unknown[]).includes(doc.density)
@@ -81,4 +92,34 @@ export function migrateTableConfig(raw: unknown): TableConfigV1 {
     density,
     pageSize,
   });
+}
+
+/**
+ * Version steps: `STEPS[v]` turns a stored version-`v` document into a version-`v + 1` one. Add
+ * one per `TABLE_CONFIG_VERSION` bump (a step may assume nothing beyond `unknown`: the final
+ * normaliser re-validates). Version 0 = a document written before the version column was trusted:
+ * shaped like V1, so its step is the identity.
+ */
+const STEPS: Record<number, (doc: unknown) => unknown> = {
+  0: (doc) => doc,
+};
+
+/** `true` for a document written by a NEWER app version than this one (a rollback scenario). */
+export const isNewerTableConfigVersion = (version: number): boolean =>
+  version > TABLE_CONFIG_VERSION;
+
+/**
+ * Runs the step chain from the stored `version` up to `TABLE_CONFIG_VERSION` and normalises. The
+ * result is ALWAYS the current shape (callers write `TABLE_CONFIG_VERSION` with it). A stored
+ * version above the current one has no steps to run: it is read best-effort (what still validates
+ * is kept) and `save` refuses to overwrite it (CONFLICT), so a rollback never destroys a newer view.
+ */
+export function migrateTableConfig(
+  raw: unknown,
+  version: number = TABLE_CONFIG_VERSION,
+): TableConfigV1 {
+  let doc = raw;
+  const start = Number.isInteger(version) && version >= 0 ? version : 0;
+  for (let v = start; v < TABLE_CONFIG_VERSION; v++) doc = (STEPS[v] ?? ((d) => d))(doc);
+  return normaliseV1(doc);
 }

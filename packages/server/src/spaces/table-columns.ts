@@ -48,7 +48,7 @@ export interface ColumnSqlContext {
 export interface ColumnSql {
   value: Sql;
   sort?: Sql;
-  /** What an `in` filter compares to when it is not `value` (the exchange is filtered by MIC, displayed by name). */
+  /** What an `in` filter compares to when it is not `value` (the exchange is filtered by MIC, displayed by name; the currency by its MAJOR code, D28). */
   filter?: Sql;
 }
 
@@ -74,7 +74,8 @@ export function columnSql(ctx: ColumnSqlContext): Record<AvailableColumnId, Colu
       value: spacePositions.selectionReason,
       sort: lowered(spacePositions.selectionReason),
     },
-    currency: { value: listings.currency },
+    // D28: the Devise cell keeps the raw spelling (GBX), filters/facets use the major currency (GBP), like search.
+    currency: { value: listings.currency, filter: majorCurrencyOf(listings.currency) },
     sector: { value: sectorExpr, sort: lowered(sectorExpr) },
     description: { value: instruments.description },
     price: { value: m.price },

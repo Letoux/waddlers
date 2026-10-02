@@ -73,7 +73,7 @@ describe('each filterable column', () => {
       within('sector', 'Technologie', 'Energie'),
       ['Alpha', 'bravo', 'foxtrot', 'hotel'],
     ],
-    ['currency raw GBX', within('currency', 'GBX'), ['Echo']],
+    ['currency GBP covers a GBX listing (D28)', within('currency', 'GBP'), ['Echo']],
     ['currency USD', within('currency', 'USD'), ['Charlie', 'foxtrot']],
     ['exchange by MIC', within('exchange', 'XNAS'), ['Charlie', 'foxtrot']],
     ['perf_1w', between('perf_1w', '2', '5'), ['Charlie', 'Echo', 'hotel']],
@@ -94,6 +94,10 @@ describe('each filterable column', () => {
 
   it('a sector filter never matches an ETF (sector is not applicable to it, specs 24)', async () => {
     expect(await found([within('sector', 'Finance')])).toEqual(['Charlie', 'Echo']);
+  });
+
+  it('the raw spelling is not a filter value: GBX is well-formed but matches nothing (D28)', async () => {
+    expect(await found([within('currency', 'GBX')])).toEqual([]);
   });
 
   it('perf_period follows the requested period', async () => {
@@ -241,7 +245,7 @@ describe('positions.facets', () => {
     expect(f.currency).toEqual([
       { value: 'EUR', label: 'EUR', count: 5 },
       { value: 'USD', label: 'USD', count: 2 },
-      { value: 'GBX', label: 'GBX', count: 1 },
+      { value: 'GBP', label: 'GBP (cotations en pence incluses)', count: 1 },
     ]);
     expect(f.exchange).toEqual([
       { value: 'XPAR', label: 'Euronext Paris', count: 5 },

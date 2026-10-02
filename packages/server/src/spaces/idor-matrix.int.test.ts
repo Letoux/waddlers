@@ -3,7 +3,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createUser, disableUser } from '../admin';
 import { getDb } from '../db/client';
-import { listingMetrics, spacePositions, spaces, tableConfigs } from '../db/schema';
+import { listingMetrics, spaceMembers, spacePositions, spaces, tableConfigs } from '../db/schema';
 import {
   createApp,
   PASSWORD,
@@ -572,6 +572,32 @@ describe('table config and facets (S7) isolation', () => {
     expect(rows.map((r) => r.spaceId)).toEqual([fx.spaceA]);
     // The other space's own member sees defaults for B.
     expect((await read('memberOfAnotherSpace', fx.spaceB)).isDefault).toBe(true);
+  });
+
+  it('a user in BOTH spaces: a save in A leaves B at the defaults (audit F3, mutation M3)', async () => {
+    // `other` owns B; make them a viewer of A too, then save in A only.
+    const ids = (globalThis as unknown as { __ids: Record<string, string> }).__ids;
+    await getDb()
+      .insert(spaceMembers)
+      .values({ spaceId: fx.spaceA, userId: ids.other!, role: 'viewer' });
+    const saved = await call(spec('tableConfig.save'), 'memberOfAnotherSpace', fx.spaceA, fx.posA, {
+      spaceId: fx.spaceA,
+      config: cfg('perf_1y'),
+    });
+    expectOutcome(saved, 'ok');
+    const inA = await read('memberOfAnotherSpace', fx.spaceA);
+    expect([inA.isDefault, inA.config.sort?.columnId]).toEqual([false, 'perf_1y']);
+    const inB = await read('memberOfAnotherSpace', fx.spaceB);
+    expect(inB.isDefault).toBe(true);
+    expect(inB.config.sort).toBeUndefined();
+    // Reset in B must not delete the view of A, and the row stays keyed to A.
+    expectOutcome(
+      await call(spec('tableConfig.reset'), 'memberOfAnotherSpace', fx.spaceB, fx.posA),
+      'ok',
+    );
+    expect((await read('memberOfAnotherSpace', fx.spaceA)).isDefault).toBe(false);
+    const rows = await getDb().select().from(tableConfigs);
+    expect(rows.map((r) => [r.userId, r.spaceId])).toEqual([[ids.other, fx.spaceA]]);
   });
 
   it('facets only describe the authorized space', async () => {

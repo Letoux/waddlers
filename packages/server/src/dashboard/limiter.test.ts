@@ -136,3 +136,34 @@ describe('per-procedure policy (positions.list: in-flight cap, no rate)', () => 
     expect(limiter.acquire('u1', 'summary').allowed).toBe(true);
   });
 });
+
+describe('burst (tableConfig.save: 30/min, burst 10)', () => {
+  const opts = { ratePerMinute: 30, burst: 10, maxConcurrent: 2 };
+  it('admits `burst` calls at once, then refills at the sustained rate (one per 2 s)', () => {
+    const { limiter, advance } = make(opts);
+    for (let i = 0; i < 10; i += 1) {
+      const a = limiter.acquire('u1', 'tableConfig.save');
+      expect(a.allowed, `call ${i}`).toBe(true);
+      if (a.allowed) a.release();
+    }
+    expect(limiter.acquire('u1', 'tableConfig.save')).toEqual({
+      allowed: false,
+      retryAfterMs: 2000,
+    });
+    advance(2000);
+    expect(limiter.acquire('u1', 'tableConfig.save').allowed).toBe(true);
+  });
+  it('never refills past the burst, even after a long idle time', () => {
+    const { limiter, advance } = make(opts);
+    advance(3_600_000);
+    let admitted = 0;
+    for (let i = 0; i < 30; i += 1) {
+      const a = limiter.acquire('u1', 'tableConfig.save');
+      if (a.allowed) {
+        admitted += 1;
+        a.release();
+      }
+    }
+    expect(admitted).toBe(10);
+  });
+});
