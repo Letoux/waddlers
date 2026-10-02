@@ -117,24 +117,30 @@ export function orderBy(
   return [sql`${expr} ${direction} nulls last`, ...tiebreak];
 }
 
-/** Escapes `\`, `%` and `_` so user text is a literal substring in `ILIKE ... ESCAPE '\'`. */
-export function escapeLike(term: string): string {
-  return term.replace(/[\\%_]/g, (c) => `\\${c}`);
-}
-
 /** Folds case, accents and typographic apostrophes (`’`, `‘` -> `'`): `Hermès`, `l’Oréal` match `hermes`, `l'oreal`. */
 const fold = (expr: SQL | AnyColumn): SQL =>
   sql`unaccent(translate(lower(${expr}), ${'’‘'}, ${"''"}))`;
 
 /**
+ * LIKE pattern of a search term: FOLD first, ESCAPE after (security P3-A). `unaccent` maps
+ * full-width look-alikes to ASCII (`％` -> `%`, `＿` -> `_`, `＼` -> `\`), so escaping before
+ * folding would let them become wildcards. Escapes `\`, `%` and `_` of the folded text (`E''`
+ * literals: a backslash whatever `standard_conforming_strings` says), then wraps it in `%...%`.
+ */
+function likePattern(term: string): SQL {
+  const folded = fold(sql`${term}::text`);
+  const escaped = sql`replace(replace(replace(${folded}, E'\\\\', E'\\\\\\\\'), '%', E'\\\\%'), '_', E'\\\\_')`;
+  return sql`('%' || ${escaped} || '%')`;
+}
+
+/**
  * Case-, accent- and apostrophe-insensitive substring search over every searchable text field
  * (specs 20): name, code, ISIN, sector, currency (raw AND major, so `GBP` finds GBX listings),
- * exchange name and MIC. One bound parameter (folded the same way as the columns, in SQL), no
- * string concatenation. The escape character is written `E'\\'` (a single backslash whatever
- * `standard_conforming_strings` says), and `escapeLike` makes `%`, `_` and `\` literal.
+ * exchange name and MIC. One bound parameter (folded and escaped in SQL, same fold as the
+ * columns), no string concatenation. The escape character is a single backslash, written `E'\\'` in SQL.
  */
 export function searchPredicate(term: string): SQL {
-  const pattern = fold(sql`${`%${escapeLike(term)}%`}::text`);
+  const pattern = likePattern(term);
   const like = (expr: SQL | AnyColumn) => sql`${fold(expr)} like ${pattern} escape E'\\\\'`;
   return sql`(${sql.join(
     [

@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { TABLE_COLUMNS_BY_ID, type TableColumnId } from '@waddlers/contracts';
 import {
   cellView,
+  formatMoney,
+  isRightAligned,
+  REASON_LABELS,
   columnHeader,
   PENDING_TOOLTIP,
   RECALCULATING_TEXT,
@@ -119,7 +122,10 @@ describe('perf', () => {
     expect(cellView(def('perf_1y'), perf('0.01')).tone).toBe('neutral');
   });
   it('null with a reason is a dash and the reason', () => {
-    const v = cellView(def('perf_1y'), perf(null, { baseDate: null, reason: 'history_too_short' }));
+    const v = cellView(
+      def('perf_1y'),
+      perf(null, { baseDate: null, reason: 'insufficient_history' }),
+    );
     expect(v.text).toBe('—');
     expect(v.tooltip).toBe('Historique insuffisant sur la période');
   });
@@ -192,5 +198,60 @@ describe('unsortableReason', () => {
     expect(unsortableReason(def('market_cap_eur'))).toBe(PENDING_TOOLTIP);
     expect(unsortableReason(def('price_eur'))).toBeNull();
     expect(unsortableReason(def('name'))).toBeNull();
+  });
+});
+
+describe('formatMoney', () => {
+  it('never reads a minor unit as pounds or rand (F-FE1)', () => {
+    for (const code of ['GBp', 'GBX']) {
+      const t = formatMoney('2000', code);
+      expect(t).toBe(`2\u202f000${NBSP}pence (${code})`);
+      expect(t).not.toContain('£');
+    }
+    const za = formatMoney('1500', 'ZAc');
+    expect(za).toContain('pence (ZAc)');
+    expect(za).not.toMatch(/R|ZAR/);
+  });
+  it('formats major currencies', () => {
+    expect(formatMoney('1234.5', 'EUR')).toBe(`1\u202f234,50${NBSP}€`);
+    expect(formatMoney('12.5', 'USD')).toContain('12,50');
+  });
+  it('an unknown code is shown raw, never as a currency', () => {
+    expect(formatMoney('12.5', 'XYZ1')).toBe(`12,5${NBSP}XYZ1`);
+  });
+  it('a positive amount never renders as 0 (F-FE2)', () => {
+    expect(formatMoney('0.0042', 'EUR', { price: true })).toBe(`0,0042${NBSP}€`);
+    expect(formatMoney('0.1234', 'USD', { price: true })).toContain('0,1234');
+    expect(formatMoney('0.00001', 'EUR', { price: true })).toBe(`< 0,0001${NBSP}€`);
+    expect(formatMoney('0.004', 'EUR')).toBe(`< 0,01${NBSP}€`);
+    expect(formatMoney('0.00001', 'GBp', { price: true })).toContain('< 0,0001');
+  });
+  it('a real zero stays 0', () => {
+    expect(formatMoney('0', 'EUR')).toBe(`0,00${NBSP}€`);
+    expect(formatMoney('0', 'EUR', { price: true })).toBe(`0,00${NBSP}€`);
+  });
+});
+
+describe('reason labels', () => {
+  it('every shared reason code has a French label', () => {
+    for (const label of Object.values(REASON_LABELS)) expect(label.length).toBeGreaterThan(3);
+    expect(REASON_LABELS.fx_missing).toBe('Taux de change indisponible');
+    expect(REASON_LABELS.rounds_to_zero).toBe('Montant trop petit pour être affiché');
+  });
+});
+
+describe('alignment (F-FE6)', () => {
+  it('numeric columns are right-aligned, text and dates are not', () => {
+    for (const id of [
+      'quantity',
+      'price',
+      'price_eur',
+      'fx_rate',
+      'perf_1y',
+      'tracked_value_eur',
+    ] as const)
+      expect(isRightAligned(def(id)), id).toBe(true);
+    for (const id of ['name', 'symbol', 'currency', 'price_date', 'sector'] as const)
+      expect(isRightAligned(def(id)), id).toBe(false);
   });
 });

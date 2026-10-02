@@ -116,10 +116,21 @@ function applyEdit(
   );
 }
 
-/** Rollback: restores BOTH the quantity and (where known) the tracked-value cell. */
-function restoreRow(qc: QueryClient, listKey: QueryKey, positionId: string, snap: Snapshot) {
+/**
+ * Rollback: restores BOTH the quantity and (where known) the tracked-value cell, per cache entry
+ * (F-FE5): an entry that no longer shows this edit's value (a refetch landed, or it arrived after
+ * the edit) is left alone, whatever the other entries show.
+ */
+function restoreRow(
+  qc: QueryClient,
+  listKey: QueryKey,
+  positionId: string,
+  snap: Snapshot,
+  editedQuantity: string | null,
+) {
   eachEntry(qc, listKey, (key, data) =>
     mapRow(data, positionId, (r) => {
+      if (r.quantity !== editedQuantity) return r;
       const id = entryId(key);
       const values =
         snap.tracked.has(id) && snap.tracked.get(id) !== undefined
@@ -145,8 +156,8 @@ export type SetQuantityDeps = {
 /**
  * Optimistic quantity edit.
  * - Edits of one position are serialized (`scope`), so the last edit wins on the server.
- * - A failure rolls back that row only, and only when it still shows this edit's value and no
- *   other edit of the position is in flight; the fallback is the last confirmed value.
+ * - A failure rolls back that row only, in each cache entry that still shows this edit's value,
+ *   and only when no other edit of the position is in flight; the fallback is the last confirmed value.
  * - Refetching happens only when no other write of the space is in flight, so a refetch cannot
  *   overwrite an optimistic value that is still being saved.
  */
@@ -173,9 +184,7 @@ export function setQuantityMutationOptions(
       const alone = pendingWrites(qc, vars.spaceId, vars.positionId) <= 1;
       const fallback = confirmedFor(qc).get(key(vars));
       if (alone && fallback !== undefined) {
-        if (rowQuantity(qc, listKey, vars.positionId) === vars.quantity) {
-          restoreRow(qc, listKey, vars.positionId, fallback);
-        }
+        restoreRow(qc, listKey, vars.positionId, fallback, vars.quantity);
       }
       if (spaceFailureKind(error) !== 'not_found') notify.error(writeFailureMessage(error));
     },

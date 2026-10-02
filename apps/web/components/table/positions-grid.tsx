@@ -18,7 +18,7 @@ import type {
 import { QuantityCell } from '@/components/spaces/quantity-cell';
 import { RemovePositionButton } from '@/components/spaces/remove-position-button';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { cellView, columnHeader, unsortableReason } from '@/lib/table/cells';
+import { cellView, columnHeader, isRightAligned, unsortableReason } from '@/lib/table/cells';
 import { isSortable } from '@/lib/table/column-config';
 import type { Density } from '@/lib/table/density';
 import { cn } from '@/lib/utils';
@@ -29,7 +29,6 @@ const features = tableFeatures({ rowSortingFeature, rowPaginationFeature });
 type RowColumn = ColumnDef<typeof features, TablePositionRow>;
 const NO_ROWS: TablePositionRow[] = [];
 
-const RIGHT_ALIGNED = new Set(['money', 'perf', 'decimal', 'fx']);
 const ACTIONS_ID = 'actions';
 
 type GridProps = {
@@ -136,7 +135,7 @@ export function PositionsGrid(props: GridProps) {
                   const def = defById.get(header.column.id);
                   const sortable = !!def && header.column.getCanSort();
                   const dir = header.column.getIsSorted();
-                  const right = !!def && RIGHT_ALIGNED.has(def.cell);
+                  const right = !!def && isRightAligned(def);
                   return (
                     <th
                       key={header.id}
@@ -179,6 +178,9 @@ export function PositionsGrid(props: GridProps) {
                       ) : (
                         <span title={(def && unsortableReason(def)) ?? def?.label}>
                           <table.FlexRender header={header} />
+                          {def && unsortableReason(def) && (
+                            <span className="sr-only"> ({unsortableReason(def)})</span>
+                          )}
                         </span>
                       )}
                     </th>
@@ -192,19 +194,23 @@ export function PositionsGrid(props: GridProps) {
               <tr key={row.id} data-testid="position-row" className="border-b last:border-b-0">
                 {row.getAllCells().map((cell, index) => {
                   const def = defById.get(cell.column.id);
+                  // First column = the row header (screen readers announce the company per cell).
+                  const Cell = index === 0 ? 'th' : 'td';
                   return (
-                    <td
+                    <Cell
                       key={cell.id}
+                      scope={index === 0 ? 'row' : undefined}
                       className={cn(
                         pad,
                         'whitespace-nowrap',
-                        def && RIGHT_ALIGNED.has(def.cell) && 'text-right',
+                        index === 0 && 'font-normal',
+                        def && isRightAligned(def) && 'text-right',
                         cell.column.id === ACTIONS_ID && 'text-right',
                         index === 0 && 'sticky left-0 z-10 border-r bg-background',
                       )}
                     >
                       <table.FlexRender cell={cell} />
-                    </td>
+                    </Cell>
                   );
                 })}
               </tr>

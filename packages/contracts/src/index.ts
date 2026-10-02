@@ -14,6 +14,7 @@ import { positionsTableInputFields, tableValuesSchema } from './table';
 export * from './columns';
 export * from './dashboard';
 export * from './table';
+export * from './table-reasons';
 
 /** Browser-safe oRPC contract. Never import server code here. */
 

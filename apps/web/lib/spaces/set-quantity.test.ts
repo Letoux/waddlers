@@ -189,6 +189,18 @@ describe('useSetQuantity state machine (setQuantityMutationOptions)', () => {
     expect(quantityOf(qc, X)).toBe('9');
   });
 
+  it('decides the rollback per cache entry (F-FE5): an entry that arrived after the edit is kept', async () => {
+    const { done } = edit(X, '5');
+    await started(1);
+    // A second cache entry (another sort/page) lands after the edit, with the server's value.
+    const other = [...listKey, { page: 2 }];
+    qc.setQueryData<PositionsListOutput>(other, listOutput([row(X, '9'), row(Y, '7')]));
+    calls[0]!.gate.reject(new ORPCError('INTERNAL_SERVER_ERROR'));
+    await done;
+    expect(quantityOf(qc, X)).toBe('1'); // the edited entry is rolled back
+    expect(qc.getQueryData<PositionsListOutput>(other)?.rows[0]?.quantity).toBe('9'); // not overwritten
+  });
+
   it('a clear (null) is an ordinary value: rolled back to the previous quantity', async () => {
     const { done } = edit(X, null);
     await started(1);

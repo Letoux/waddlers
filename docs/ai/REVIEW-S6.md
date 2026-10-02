@@ -6,10 +6,10 @@ Independent code review and security audit of commit 98d69bb (S6 backend: server
 
 | Ref | Sev | Finding | Status |
 | --- | --- | --- | --- |
-| Review F1 | P1 | The table's Cours EUR / Valeur suivie came from the worker's stored `price_eur` (each price converted at its own date) while the dashboard values the space with one current rule: the sum of the column could differ from the dashboard total, and a row could be valued in one and missing in the other | **Fixed (D25).** `price_eur`, `fx_rate` and `tracked_value_eur` are computed in SQL in the same read-only REPEATABLE READ snapshot with the dashboard's rule: `spaceAsOf` = newest end-price date of the held positions, newest `fx_daily` row per major currency in `[spaceAsOf - 7, spaceAsOf]`, `price / divisor / rate` (GBX through the domain's `MINOR_UNITS`), full precision, one 8-decimal rounding on the wire. Sorting stays server-side. Shared with the dashboard: `FX_TOLERANCE_DAYS`, the domain minor-unit table (now exported), the stale constants; cross-referenced in `compute.ts`. Test `table-consistency.int.test.ts`: EUR + USD listing lagging a holiday day + GBX + missing rate + missing price + no metrics + zero quantity + watchlist; sum of tracked values = `dashboard.summary.total` exactly, null rows = `summary.missing` + watchlist; rate dated after `spaceAsOf` or beyond 7 days is ignored. Caveat documented: per-row 8-decimal rounding vs one rounding of the sum (a few 1e-8 at most). A watchlist-only space falls back to the newest price date of all entries. New reasons: `price_invalid`, `fx_missing` (was `rate_missing`). |
+| Review F1 | P2 | The table's Cours EUR / Valeur suivie came from the worker's stored `price_eur` (each price converted at its own date) while the dashboard values the space with one current rule: the sum of the column could differ from the dashboard total, and a row could be valued in one and missing in the other | **Fixed (D25).** `price_eur`, `fx_rate` and `tracked_value_eur` are computed in SQL in the same read-only REPEATABLE READ snapshot with the dashboard's rule: `spaceAsOf` = newest end-price date of the held positions, newest `fx_daily` row per major currency in `[spaceAsOf - 7, spaceAsOf]`, `price / divisor / rate` (GBX through the domain's `MINOR_UNITS`), full precision, one 8-decimal rounding on the wire. Sorting stays server-side. Shared with the dashboard: `FX_TOLERANCE_DAYS`, the domain minor-unit table (now exported), the stale constants; cross-referenced in `compute.ts`. Test `table-consistency.int.test.ts`: EUR + USD listing lagging a holiday day + GBX + missing rate + missing price + no metrics + zero quantity + watchlist; sum of tracked values = `dashboard.summary.total` exactly, null rows = `summary.missing` + watchlist; rate dated after `spaceAsOf` or beyond 7 days is ignored. Caveat documented: per-row 8-decimal rounding vs one rounding of the sum (a few 1e-8 at most). A watchlist-only space falls back to the newest price date of all entries. New reasons: `price_invalid`, `fx_missing` (was `rate_missing`). |
 | Review F2 | P2 | Search was case-insensitive only: `societe`, `sante`, `hermes`, `l'oreal` did not find `Société`, `Santé`, `Hermès`, `L’Oréal` | **Fixed.** Migration 0006 `CREATE EXTENSION IF NOT EXISTS unaccent` (trusted extension, additive; the app role can call it, tested in `roles.int.test.ts`). Predicate `unaccent(translate(lower(x), '’‘', '''')) LIKE <same fold of the pattern> ESCAPE E'\\'` on name, code, ISIN, sector, currency (raw and major), exchange name and MIC; escaping kept (`%`, `_`, `\` literal) and written with `E'\\'` so it does not depend on `standard_conforming_strings`. Tests: `societe`, `SANTE`, `santé`, `l'oreal` / `l’oreal` / `L‘Oréal` against typographic and straight apostrophes in the data, `hermes`, `HERMÈS`. Re-measured on 5 000 positions: search 22 - 27 ms -> 39 - 51 ms (budget 300). Sorting text keys are accent-insensitive too (`unaccent(lower())`). |
 | Review F3 | P2 | Two sources for the quantity (`row.quantity` and `values.quantity`) and a stale flag on a watchlist tracked value with no amount | **Fixed.** `values.quantity` removed (`cell: 'row'` in the registry: the column stays requestable, sortable and filterable, `row.quantity` is the single source). A tracked value with a null amount is never `isStale`. Tests: no `quantity` key in `values`, watchlist tracked value not stale, a held one is. |
-| Review F4 | - | Not in the brief handed to this fix pass | **Not addressed here** (no text available to this pass; to be confirmed with the orchestrator). |
+| Review F4 | - | Not in the brief handed to the first fix pass | **Resolved by D26** (pending columns stay visible, never sortable, always `—` with a tooltip). |
 | Review F5 | P3 | `label` held compact or reworded forms instead of the specs 17 wording; the test comment claimed "as written there" | **Fixed.** `label` = the specs 17 bullet word for word (`Cours dans la devise locale`, `Capitalisation dans la devise locale`, straight apostrophes), `shortLabel` = compact form (`Cours local`, `Capitalisation locale`, plus the existing specs 18 ones). The unit test now reads the bullets from `specs.md` instead of retyping them; the comment is fixed. |
 | Review F6 | P3 | `debt_ratio` / `dividend_yield` declared as `perf` cells (which carry a `baseDate` they never have); clients needed casts to tell cells apart | **Fixed.** New `percent` cell `{ kind, value, reason, asOf, isStale }`; `debt_ratio` and `dividend_yield` use it; `tableCellSchema` is `string | discriminatedUnion('kind', money, perf, percent, fx) | null`, every emitted object cell carries its `kind` (test: each emitted cell parses and its kind equals the column's declared `cell`). |
 | Review F7 | P3 | Page-level `asOf` was ambiguous (newest `computed_at` only) | **Fixed.** Renamed `computedAt` (newest) and added `oldestComputedAt` (oldest among the rows with metrics). Tests: newest/oldest under search, null when no metrics, `asOf` is gone. |
@@ -33,3 +33,38 @@ Independent code review and security audit of commit 98d69bb (S6 backend: server
 - S7 reuses `columnSql(ctx).<id>.value` for filters and must drop unknown column ids of a saved configuration (F9).
 - S8 flips `availability` and adds the SQL mapping; the `percent` cell is ready for `debt_ratio` / `dividend_yield`.
 - The worker's stored `listing_metrics.price_eur`, `fx_rate_per_eur`, `fx_rate_date` are no longer read by the table (D25); they stay as materialized data.
+
+## Re-review, frontend review and audit (final S6 fix pass)
+
+Backend re-review (after commit 31e27cc):
+
+| Ref | Finding | Status |
+| --- | --- | --- |
+| R1 | Consistency test only covered terminating rates; per-row 8-decimal rounding vs the dashboard's single rounding was untested | **Fixed.** `table-consistency.int.test.ts` adds a 1.0837 rate case asserting `abs(sum - total) <= n x 1e-8`. SQL left as `quantity * (price / divisor / rate)`: PostgreSQL's quotient scale is far finer than 1e-8, so reordering the operations would not change the bound. |
+| R2 | F4 status and F1 severity inconsistent in this file | **Fixed** (F4 resolved by D26, F1 is P2). |
+| R3 | Minor wording/doc drift | **Fixed** with R2/R4. |
+| R4a | Integration-setup header comment overstated isolation (two concurrent `test:integration` runs still share `<db>_int`) | **Fixed** (comment corrected). |
+| R4b | FRONTEND.md said E2E and integration share a database | **Fixed** (they no longer do, since afe1cdf). |
+| R4c | The `DATABASE_URL_TEST` role needs CREATEDB (or a pre-created `_int` database) | **Fixed** (BACKEND.md). |
+
+Security re-audit: **pass**, two P3.
+
+| Ref | Sev | Finding | Status |
+| --- | --- | --- | --- |
+| P3-A | P3 | Full-width `％`, `＿`, `＼` were folded to ASCII by `unaccent` after escaping and became LIKE wildcards | **Fixed.** Fold first, escape after, in SQL (`replace` chain with `E''` literals on the folded term). Tests: `％` and `＿` do not match all rows; `＼` and `50％` behave like their ASCII forms. |
+| P3-B | P3 | `currentFxRates` took a bare space id string | **Fixed.** Takes `AuthorizedSpace`. Integration test `table-fx-isolation.int.test.ts` (space B with a later price date and a later rate); verified by mutation: without the space filter the test fails (rate dated 2026-10-01 instead of 2026-09-28). |
+
+Frontend review:
+
+| Ref | Sev | Finding | Status |
+| --- | --- | --- | --- |
+| F-FE1 | P2 | `GBp` was formatted as pounds | **Fixed.** Minor units and non-ISO codes never reach `Intl` as a currency: "2 000 pence (GBp)". Unit tests (GBp, GBX, ZAc, EUR, USD). |
+| F-FE2 | P2 | A small positive amount could render as 0 | **Fixed.** Prices use 2 to 4 fraction digits; a positive amount that still rounds to zero reads "< 0,01 €" ("< 0,0001 €" for prices). Unit tests (0.0042, 0.1234, 0). |
+| F-FE3 | P3 | Reason codes duplicated by hand in the UI (`rate_missing`, `history_too_short` never emitted) | **Fixed.** Codes exported from `@waddlers/contracts` (`TABLE_REASONS`); `REASON_LABELS` typed over them. `recalculating` stays frontend-only. |
+| F-FE4 | P3 | A removed search reappeared (field not synced from the URL) | **Fixed.** Field syncs from `url.q`; E2E: search, click "Titres", field empty and no `?q=`. |
+| F-FE5 | P3 | Optimistic rollback decided from the first cache entry | **Fixed.** Decided per entry in `restoreRow`; unit test with an entry arriving after the edit. |
+| F-FE6 | P3 | Numeric columns not consistently right-aligned | **Fixed.** By `dataType` (decimal, money, percent), quantity included. |
+| F-FE7 | P3 | First column not a row header; unsortable headers explained by a tooltip only | **Fixed.** First cell is `<th scope="row">`; unsortable headers carry sr-only explanations. |
+| F-FE8 | P3 | Not addressed | **Deferred.** |
+
+Frontend security audit: **pass** (no new finding).

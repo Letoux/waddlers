@@ -159,9 +159,9 @@ test.describe('sélection d’un espace', () => {
     const row = rowFor(page, 'Air Liquide');
     await expect(row.getByTestId('quantity')).toContainText('8');
     // Read-only details of the row (default columns: name, code, price in EUR).
-    await expect(row.locator('td').first()).toContainText('Air Liquide');
-    await expect(row.locator('td').nth(1)).toHaveText('AI');
-    await expect(row.locator('td').nth(2)).toContainText('€');
+    await expect(row.locator('th, td').first()).toContainText('Air Liquide');
+    await expect(row.locator('th, td').nth(1)).toHaveText('AI');
+    await expect(row.locator('th, td').nth(2)).toContainText('€');
 
     await editButton(page, 'Air Liquide').click();
     await expect(editor(page, 'Air Liquide')).toBeFocused();
@@ -410,8 +410,8 @@ test.describe('sélection d’un espace', () => {
     const shell = rowFor(page, 'Shell');
     await expect(shell.getByTestId('quantity')).toContainText(`1${GROUP}234,5`);
     // Cours EUR is converted from pence via the pound (the raw GBX price is the `price` column).
-    await expect(shell.locator('td').nth(2)).toContainText('€');
-    await expect(shell.locator('td').nth(2)).not.toContainText('GBX');
+    await expect(shell.locator('th, td').nth(2)).toContainText('€');
+    await expect(shell.locator('th, td').nth(2)).not.toContainText('GBX');
   });
 
   test('at 375px there is no horizontal overflow and the selector is reachable', async ({

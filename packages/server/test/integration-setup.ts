@@ -8,12 +8,14 @@ const INTEGRATION_DB_SUFFIX = '_int';
  * Vitest globalSetup: migrate the test database once before all integration tests.
  *
  * ISOLATION INVARIANT: the integration tests TRUNCATE shared tables and assume nothing else writes
- * to their database. Playwright's global setup (db:seed, market:refresh, new users) and a second
- * `test:integration` run default to the same `waddlers_test`; running concurrently they wipe or
- * extend each other's rows, which shows up as flaky counts ("3 metrics rows instead of 2",
+ * to their database. Playwright's global setup (db:seed, market:refresh, new users) defaults to the
+ * same `waddlers_test`; running concurrently they would wipe or extend each other's rows,
+ * which shows up as flaky counts ("3 metrics rows instead of 2",
  * "refreshed instead of skipped_fresh") and as TRUNCATE lock waits that look like a hang.
  * So the suite works on its own database `<name>_int` (created on demand next to the configured
- * one) and exports it to the test workers through DATABASE_URL_TEST.
+ * one) and exports it to the test workers through DATABASE_URL_TEST. Two concurrent
+ * `test:integration` runs still share `<name>_int`: do not overlap them. Creating it needs a role
+ * with CREATEDB (or a pre-created database).
  */
 export default async function setup(): Promise<void> {
   const base = process.env.DATABASE_URL_TEST;

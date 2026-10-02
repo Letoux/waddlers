@@ -22,7 +22,7 @@ async function columnTexts(page: Page, name: string): Promise<string[]> {
   const heads = await page.getByRole('columnheader').allTextContents();
   const index = heads.findIndex((h) => h.trim().startsWith(name));
   expect(index, `column ${name}`).toBeGreaterThanOrEqual(0);
-  const cells = rows(page).locator(`td:nth-child(${index + 1})`);
+  const cells = rows(page).locator(`:is(th, td):nth-child(${index + 1})`);
   const out: string[] = [];
   for (const cell of await cells.all()) {
     out.push(((await cell.getByTestId('cell-value').first().textContent()) ?? '').trim());
@@ -104,6 +104,23 @@ test.describe('recherche (specs 43)', () => {
     await expect(rows(page)).toHaveCount(1);
 
     await search(page).fill('');
+    await expect(rows(page)).toHaveCount(5);
+    await expect(page).not.toHaveURL(/[?&]q=/);
+  });
+
+  test('the "Titres" nav link clears a search (F-FE4)', async ({ page, scenario }) => {
+    const s = await scenario([{ label: 'A', role: 'owner', positions: FIVE }]);
+    await s.signIn(page);
+    await openTitres(page);
+    await search(page).fill('air');
+    await expect(rows(page)).toHaveCount(1);
+    await expect(page).toHaveURL(/[?&]q=air(&|$)/);
+
+    await page
+      .getByRole('navigation', { name: 'Navigation principale' })
+      .getByRole('link', { name: 'Titres' })
+      .click();
+    await expect(search(page)).toHaveValue('');
     await expect(rows(page)).toHaveCount(5);
     await expect(page).not.toHaveURL(/[?&]q=/);
   });
@@ -208,7 +225,7 @@ test.describe('tri (specs 43)', () => {
     const cap = header(page, /Capitalisation EUR/);
     await expect(cap.getByRole('button')).toHaveCount(0);
     await expect(cap).not.toHaveAttribute('aria-sort', /.+/);
-    const firstCap = rows(page).first().locator('td').nth(5);
+    const firstCap = rows(page).first().locator('th, td').nth(5);
     await expect(firstCap).toContainText('—');
     await firstCap.getByText('—').hover();
     await expect(page.getByRole('tooltip').first()).toContainText(
@@ -284,7 +301,7 @@ test.describe('quantité dans le tableau', () => {
     );
     const cell = rows(page)
       .filter({ hasText: name })
-      .locator(`td:nth-child(${index + 1})`);
+      .locator(`:is(th, td):nth-child(${index + 1})`);
     return toNumber(((await cell.getByTestId('cell-value').first().textContent()) ?? '').trim());
   };
 
@@ -316,7 +333,7 @@ test.describe('quantité dans le tableau', () => {
     await openTitres(page, '?tri=name%3Adesc&page=2');
     await expect(page.getByTestId('page-range')).toHaveText('51–60 sur 60');
     const first = rows(page).first();
-    const name = (await first.locator('td').first().textContent())?.trim() ?? '';
+    const name = (await first.locator('th, td').first().textContent())?.trim() ?? '';
     await first.getByRole('button', { name: /Modifier la quantité/ }).click();
     const input = page.getByRole('textbox', { name: `Quantité de ${name}` });
     await input.fill('3,5');
@@ -377,7 +394,7 @@ test.describe('états et affichage', () => {
     // CW8 is unpriced and a watchlist entry: dashes, never 0.
     const cw8 = rows(page).filter({ hasText: 'Amundi' });
     await expect(cw8.getByTestId('quantity')).toContainText('—');
-    for (const cell of await cw8.locator('td').all()) {
+    for (const cell of await cw8.locator('th, td').all()) {
       await expect(cell).not.toHaveText(/^\s*0(,0+)?\s*(%|€)?\s*$/);
     }
 
@@ -455,7 +472,7 @@ test.describe('mobile (375px)', () => {
     // The first column header and cells stay at the left edge of the scroll area.
     expect(Math.abs((await left(header(page, /Société/))) - scrollerLeft)).toBeLessThanOrEqual(2);
     expect(
-      Math.abs((await left(rows(page).first().locator('td').first())) - scrollerLeft),
+      Math.abs((await left(rows(page).first().locator('th, td').first())) - scrollerLeft),
     ).toBeLessThanOrEqual(2);
     // Scrolled to the end, the last column really is in view (and the first stays pinned).
     await scroller.evaluate((el) => (el.scrollLeft = el.scrollWidth));

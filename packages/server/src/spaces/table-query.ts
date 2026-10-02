@@ -52,7 +52,7 @@ export async function queryTablePage(
   space: AuthorizedSpace,
   q: TableQuery,
 ): Promise<TablePositionRow[]> {
-  const fx = currentFxRates(db, space.id);
+  const fx = currentFxRates(db, space);
   const ctx = { period: q.period, fxRate: eurRate(fx) };
   const cols = columnSql(ctx);
   const rows = await db

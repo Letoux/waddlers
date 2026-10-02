@@ -14,7 +14,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildValues, type TableRowData } from './table-cells';
 import { sql } from 'drizzle-orm';
-import { columnSql, escapeLike, SORT_SQL } from './table-columns';
+import { columnSql, SORT_SQL } from './table-columns';
 
 /** Specs 17, section by section, word for word (plus the three non-§17 columns: Performance période is in §17's prose, Quantité and Valeur suivie are `tracking`). */
 const SPECS_17: Record<string, string[]> = {
@@ -192,11 +192,6 @@ describe('column registry (SQL mapping)', () => {
         expect(SORT_SQL(ctx(period))[id], `${id}/${period}`).toBeDefined();
       }
     }
-  });
-
-  it('escapeLike makes %, _ and backslash literal', () => {
-    expect(escapeLike('50%_off\\x')).toBe('50\\%\\_off\\\\x');
-    expect(escapeLike('plain')).toBe('plain');
   });
 });
 

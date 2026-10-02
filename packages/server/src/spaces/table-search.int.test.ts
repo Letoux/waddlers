@@ -125,6 +125,13 @@ describe('LIKE wildcards are literal', () => {
     ['k\\s', ['back\\slash']],
     ['%%', []],
     ['\\%', []],
+    // Full-width look-alikes are folded to ASCII by unaccent: they must be escaped AFTER folding.
+    ['％', ['Rate 50% Fund']], // = literal "%", not "match everything"
+    ['＿', ['under_score']], // = literal "_"
+    ['＼', ['back\\slash']], // = literal "\\"
+    ['50％', ['Rate 50% Fund']], // = "50%", not "50" followed by anything
+    ['％％', []],
+    ['ｕｎｄｅｒ＿ｓ', ['under_score']],
     ["'; drop table spaces; --", []],
   ])('search %j', async (term, expected) => {
     expect(await found(term)).toEqual(expected);

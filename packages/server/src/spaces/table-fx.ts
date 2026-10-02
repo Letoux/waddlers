@@ -4,6 +4,7 @@ import { alias } from 'drizzle-orm/pg-core';
 import type { DbExecutor } from '../db/create';
 import { fxDaily, listingMetrics, spacePositions } from '../db/schema';
 import { FX_TOLERANCE_DAYS } from '../market-data/config';
+import type { AuthorizedSpace } from './access';
 
 /**
  * D25: the table's EUR price and tracked value use EXACTLY the dashboard's current rule
@@ -58,7 +59,8 @@ export const priceDivisor: SQL = sql`case ${m.priceCurrency} ${sql.join(
  * priced position falls back to the newest over all its entries (a watchlist-only space has no
  * dashboard total to agree with, and its rows still need a date to pick a rate for).
  */
-export function currentFxRates(db: DbExecutor, spaceId: string) {
+export function currentFxRates(db: DbExecutor, space: AuthorizedSpace) {
+  const spaceId = space.id;
   const sp = alias(spacePositions, 'fx_ref_sp');
   const lm = alias(listingMetrics, 'fx_ref_lm');
   const newestPriceDate = (heldOnly: boolean) =>

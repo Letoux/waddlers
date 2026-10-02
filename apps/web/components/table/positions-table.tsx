@@ -58,11 +58,22 @@ export function PositionsTable({ spaceId, canEdit }: { spaceId: string; canEdit:
   const [searchInput, setSearchInput] = useState(url.q);
   const urlQ = useRef(url.q);
   urlQ.current = url.q;
+  const pushedQ = useRef(url.q);
   useEffect(() => {
     if (searchInput === urlQ.current) return;
-    const timer = setTimeout(() => update({ q: searchInput }), SEARCH_DEBOUNCE_MS);
+    const timer = setTimeout(() => {
+      pushedQ.current = searchInput;
+      update({ q: searchInput });
+    }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [searchInput, update]);
+  // An external URL change (nav link without `?q=`, back/forward) resets the field (F-FE4); the
+  // echo of our own debounced update is ignored so it can never overwrite what is being typed.
+  useEffect(() => {
+    if (url.q === pushedQ.current) return;
+    pushedQ.current = url.q;
+    setSearchInput(url.q);
+  }, [url.q]);
 
   const setPeriod = (next: DashboardPeriod) => {
     const search = withPeriodSearch(applyTableUrlPatch(window.location.search, {}, true), next);

@@ -7,7 +7,7 @@ import type { AppliedFxRate } from '@waddlers/contracts';
  * so the browser timezone can never shift the day.
  */
 export const UNAVAILABLE = '—';
-const NBSP = ' ';
+export const NBSP = ' ';
 
 function toNumber(value: string | null | undefined): number | null {
   if (value == null || value.trim() === '') return null;

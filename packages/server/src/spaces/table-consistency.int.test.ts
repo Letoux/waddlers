@@ -124,6 +124,57 @@ describe('D25 table vs dashboard', () => {
     expect(summary.watchlistCount).toBe(2);
   });
 
+  it('non-terminating rate: sum of rows agrees with the dashboard within n x 1e-8 (R1)', async () => {
+    // 1 / 1.0837 does not terminate: each row is rounded once to 8 decimals on the wire, the
+    // dashboard rounds its total once. Exact equality is not guaranteed, but the gap is bounded
+    // by half a unit of the 8th decimal per row. (SQL keeps `quantity * (price / divisor / rate)`
+    // at PostgreSQL's quotient scale, which is far finer than 1e-8, so the order of the
+    // operations does not change the bound; the dashboard's decimal.js stays the reference.)
+    await seedFx([
+      { currency: 'USD', rate: '1.0837', date: '2026-09-28' },
+      { currency: 'GBP', rate: '0.8', date: '2026-09-30' },
+    ]);
+    await seedEntries(
+      spaceId,
+      [
+        {
+          name: 'Odd A',
+          symbol: 'ODA',
+          mic: 'XNAS',
+          currency: 'USD',
+          quantity: '7',
+          metrics: { price: '123.457', asOfDate: '2026-09-29' },
+        },
+        {
+          name: 'Odd B',
+          symbol: 'ODB',
+          mic: 'XNAS',
+          currency: 'USD',
+          quantity: '13.37',
+          metrics: { price: '98.7654', asOfDate: '2026-09-29' },
+        },
+        {
+          name: 'Odd C',
+          symbol: 'ODC',
+          mic: 'XNAS',
+          currency: 'USD',
+          quantity: '0.00000003',
+          metrics: { price: '9.99', asOfDate: '2026-09-29' },
+        },
+      ],
+      NOW,
+    );
+    const summaryRes = await rpc('dashboard.summary', { spaceId, period: '1m' }, { cookie });
+    const summary = summaryRes.json as unknown as DashboardSummaryOutput;
+    const out = await table();
+    const amounts = out.rows
+      .map((r) => (r.values.tracked_value_eur as MoneyCell).amount)
+      .filter((a): a is string => a !== null);
+    const sum = amounts.reduce((acc, a) => acc.plus(a), new Decimal(0));
+    const gap = sum.minus(summary.total.amount!).abs();
+    expect(gap.lte(new Decimal(amounts.length).times('1e-8'))).toBe(true);
+  });
+
   it('Cours EUR is the same conversion, quantity-free (watchlist rows included)', async () => {
     const out = await table();
     const eur = (name: string) =>

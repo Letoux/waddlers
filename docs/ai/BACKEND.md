@@ -17,6 +17,8 @@ Server env is validated with Zod in `packages/server/src/env.ts`, parsed lazily 
 
 `pnpm test:integration` runs `packages/server/**/*.int.test.ts` (vitest project `integration`) against `DATABASE_URL_TEST`, migrating it first via global setup. It is excluded from `pnpm test`, and it fails loudly (not skips) if `DATABASE_URL_TEST` is unset, so CI misconfiguration cannot pass silently. Locally: `docker compose --profile test up -d postgres-test`, then `DATABASE_URL_TEST=postgres://waddlers:waddlers-test@localhost:5433/waddlers_test pnpm test:integration`.
 
+The suite runs in its own database `<name>_int`, created on demand next to `DATABASE_URL_TEST`'s: that role needs CREATEDB, or the `_int` database must be created beforehand (the docker `postgres-test` service's superuser role already can). Two concurrent `test:integration` runs still share `_int` and must not overlap.
+
 `server-only` throws outside the `react-server` condition, so vitest aliases it to a stub. A future worker run with `tsx` that imports server modules must pass `--conditions react-server` (or avoid `server-only` modules).
 
 ## oRPC

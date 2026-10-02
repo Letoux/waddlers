@@ -1,4 +1,5 @@
 import { INSTRUMENT_TYPE_LABELS } from '@waddlers/contracts';
+import { normalizeCurrency } from '@waddlers/domain';
 import type {
   FxCell,
   MoneyCell,
@@ -7,6 +8,7 @@ import type {
   TableCell,
   TableColumnDef,
   TableColumnId,
+  TableReason,
 } from '@waddlers/contracts';
 import {
   displayedSign,
@@ -14,6 +16,7 @@ import {
   formatPct,
   formatRate,
   formatSignedPct,
+  NBSP,
   UNAVAILABLE,
 } from '@/lib/dashboard/format';
 import { formatQuantity } from '@/lib/spaces/quantity';
@@ -44,25 +47,64 @@ const unavailable = (tooltip: string | null = null, tone: CellTone = 'muted'): C
   unavailable: true,
 });
 
-const REASON_LABELS: Record<string, string> = {
+/** Typed over the shared codes: a new backend reason fails to compile until it is labelled. */
+export const REASON_LABELS: Record<TableReason, string> = {
   metrics_missing: 'Données de marché pas encore disponibles',
   price_missing: 'Cours indisponible',
+  price_invalid: 'Cours invalide',
   currency_invalid: 'Devise du cours non reconnue',
-  rate_missing: 'Taux de change indisponible',
+  fx_missing: 'Taux de change indisponible',
+  rounds_to_zero: 'Montant trop petit pour être affiché',
   watchlist: 'Titre sans quantité (liste de suivi)',
-  history_too_short: 'Historique insuffisant sur la période',
+  empty_series: 'Aucun historique de cours',
+  history_starts_after_target: 'Historique insuffisant sur la période',
+  gap_exceeds_tolerance: 'Historique trop lacunaire au début de la période',
+  end_missing: 'Cours actuel indisponible',
+  end_invalid: 'Cours actuel invalide',
+  history_completeness_unknown: 'Complétude de l’historique inconnue',
+  history_gap_at_start: 'Historique lacunaire au début de la période',
+  insufficient_history: 'Historique insuffisant sur la période',
 };
 const reasonLabel = (reason: string | null) =>
-  reason ? (REASON_LABELS[reason] ?? 'Donnée indisponible') : null;
+  reason ? ((REASON_LABELS as Record<string, string>)[reason] ?? 'Donnée indisponible') : null;
 
-/** "1 234,50 €", "123,40 USD": the listing's raw currency is kept (GBX stays pence). */
-export function formatMoney(amount: string, currency: string): string {
+/**
+ * Raw listing currency, never read as a major one (F-FE1): a minor unit (GBX, GBp, ZAc) or any
+ * code that is not a plain ISO code is never given to `Intl` as a currency ("2 000 GBp" must not
+ * become "2 000 £"). Minor units read "2 000 pence (GBp)"; unknown codes "12,5 XYZ1".
+ * Fraction digits: 2 for tracked values, 2 to 4 for prices (F-FE2). A positive amount that would
+ * still round to zero reads "< 0,01 €" ("< 0,0001 €" for prices), never 0.
+ */
+export function formatMoney(
+  amount: string,
+  currency: string,
+  opts: { price?: boolean } = {},
+): string {
   const n = Number(amount);
   if (!Number.isFinite(n)) return UNAVAILABLE;
+  const maxFrac = opts.price ? 4 : 2;
+  const floor = 10 ** -maxFrac;
+  const tiny = n > 0 && n < floor / 2;
+  const shown = tiny ? floor : n;
+  const prefix = tiny ? '< ' : '';
+  const normalized = normalizeCurrency(currency);
+  if (!/^[A-Z]{3}$/.test(currency) || normalized === null || normalized.isMinorUnit) {
+    const text = new Intl.NumberFormat('fr-FR', {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: maxFrac,
+    }).format(shown);
+    const unit = normalized?.isMinorUnit ? `pence (${currency})` : currency;
+    return `${prefix}${text}${NBSP}${unit}`;
+  }
   try {
-    return new Intl.NumberFormat('fr-FR', { style: 'currency', currency }).format(n);
+    return `${prefix}${new Intl.NumberFormat('fr-FR', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: maxFrac,
+    }).format(shown)}`;
   } catch {
-    return `${new Intl.NumberFormat('fr-FR').format(n)} ${currency}`;
+    return `${prefix}${shown}${NBSP}${currency}`;
   }
 }
 
@@ -70,7 +112,7 @@ export function formatMoney(amount: string, currency: string): string {
 export const RECALCULATING_REASON = 'recalculating';
 export const RECALCULATING_TEXT = '…';
 
-function moneyView(cell: MoneyCell): CellView {
+function moneyView(cell: MoneyCell, price: boolean): CellView {
   if (cell.amount === null && cell.reason === RECALCULATING_REASON) {
     return { ...unavailable('Mise à jour en cours'), text: RECALCULATING_TEXT };
   }
@@ -78,7 +120,7 @@ function moneyView(cell: MoneyCell): CellView {
   const parts = [cell.asOf ? `Cours du ${formatNumericDate(cell.asOf)}` : null];
   if (cell.isStale) parts.push('donnée ancienne');
   return {
-    text: formatMoney(cell.amount, cell.currency),
+    text: formatMoney(cell.amount, cell.currency, { price }),
     tone: 'neutral',
     tooltip: parts.filter(Boolean).join(' : ') || null,
     stale: cell.isStale,
@@ -119,7 +161,7 @@ export function cellView(def: TableColumnDef, cell: TableCell | undefined): Cell
   if (typeof cell === 'object') {
     switch (cell.kind) {
       case 'money':
-        return moneyView(cell);
+        return moneyView(cell, def.id === 'price' || def.id === 'price_eur');
       case 'perf':
         return perfView(cell);
       case 'percent':
@@ -187,4 +229,9 @@ export function unsortableReason(def: Pick<TableColumnDef, 'id' | 'availability'
   if (def.id === 'price')
     return 'Tri impossible : cours en devises différentes. Triez par « Cours EUR ».';
   return null;
+}
+
+/** Numeric columns are right-aligned (F-FE6), by the registry's semantic type, quantity included. */
+export function isRightAligned(def: Pick<TableColumnDef, 'dataType'>): boolean {
+  return def.dataType === 'decimal' || def.dataType === 'money' || def.dataType === 'percent';
 }
