@@ -40,16 +40,20 @@ const isShown = (c: SavedConfig, id: string) => c.columns.some((x) => x.id === i
  * (the full config) matches `match`, so an earlier save can never satisfy the wait. Register it
  * BEFORE the last edit.
  */
+// Bounded: a predicate that never matches must fail the test, not hang the run.
 const configSaved = (page: Page, match: (config: SavedConfig) => boolean) =>
-  page.waitForResponse((r) => {
-    if (!r.url().includes('/tableConfig/save') || !r.ok()) return false;
-    try {
-      const body = r.request().postDataJSON() as { json?: { config?: SavedConfig } };
-      return !!body.json?.config && match(body.json.config);
-    } catch {
-      return false;
-    }
-  });
+  page.waitForResponse(
+    (r) => {
+      if (!r.url().includes('/tableConfig/save') || !r.ok()) return false;
+      try {
+        const body = r.request().postDataJSON() as { json?: { config?: SavedConfig } };
+        return !!body.json?.config && match(body.json.config);
+      } catch {
+        return false;
+      }
+    },
+    { timeout: 15_000 },
+  );
 
 async function openPanel(page: Page, name: 'Colonnes' | 'Filtres') {
   const button = page.getByRole('button', { name: new RegExp(`^${name}`) });
@@ -115,7 +119,11 @@ test.describe('filtrage (specs 43)', () => {
     await page.getByLabel('Maximum Perf. 12 mois').fill('');
     const saved = configSaved(
       page,
-      (c) => !!c.filters?.some((f) => f.kind === 'between' && f.min === cut.replace(',', '.')),
+      // The client canonicalizes bounds ("12,30" is sent as "12.3"): compare numerically.
+      (c) =>
+        !!c.filters?.some(
+          (f) => f.kind === 'between' && Number(f.min) === Number(cut.replace(',', '.')),
+        ),
     );
     await page.getByRole('button', { name: 'Appliquer' }).click();
     await expect(count(page)).toHaveText('1 titre');

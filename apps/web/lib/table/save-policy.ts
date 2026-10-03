@@ -13,10 +13,12 @@ const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, 
 /**
  * One save with the rate-limit policy: a 429 (30 saves a minute; a debounced UI should never reach
  * it) keeps the local state and is retried ONCE after the server's `retryAfterSeconds` (0.5-3 s).
- * Anything else, including the second 429, is thrown to the caller.
+ * Anything else, including the second 429, is thrown to the caller. `shouldContinue` is checked
+ * after the sleep: once false (logout during the wait) the retry is NOT sent and the 429 is thrown.
  */
 export async function saveWithRetry<T>(
   save: () => Promise<T>,
+  shouldContinue: () => boolean = () => true,
   sleep: (ms: number) => Promise<void> = wait,
 ): Promise<T> {
   try {
@@ -24,6 +26,7 @@ export async function saveWithRetry<T>(
   } catch (error) {
     if (!hasCode(error, 'TOO_MANY_REQUESTS')) throw error;
     await sleep(dashboardRetryDelay(0, error));
+    if (!shouldContinue()) throw error;
     return save();
   }
 }

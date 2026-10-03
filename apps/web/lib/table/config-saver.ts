@@ -3,10 +3,16 @@ import type { TableConfigV1 } from '@waddlers/contracts';
 export const SAVE_DEBOUNCE_MS = 500;
 
 /** `keepalive`: the page is being hidden; the request must outlive it. */
-export type SaveContext = { keepalive: boolean };
+export type SaveContext = {
+  keepalive: boolean;
+  /** False once the session is halted (logout): a pending retry must not be sent. */
+  shouldContinue: () => boolean;
+};
 
 type Options = {
   delayMs?: number;
+  /** Passed to every save (see `SaveContext`). */
+  shouldContinue?: () => boolean;
   /** Sends the FULL config. */
   save: (config: TableConfigV1, context: SaveContext) => Promise<unknown>;
   /** The server confirmed `config`. */
@@ -88,7 +94,10 @@ export class ConfigSaver {
       const config = this.pending;
       this.pending = null;
       try {
-        await this.options.save(config, { keepalive: this.keepalive });
+        await this.options.save(config, {
+          keepalive: this.keepalive,
+          shouldContinue: this.options.shouldContinue ?? (() => true),
+        });
         this.options.onSaved(config);
       } catch (error) {
         this.options.onError(error, config, this.pending !== null);

@@ -42,9 +42,10 @@ export function useTableConfig(spaceId: string, initial?: TableConfigOutput) {
           get: () => queryClient.getQueryData<TableConfigOutput>(queryKey),
           set: (value) => queryClient.setQueryData<TableConfigOutput>(queryKey, value),
         },
-        save: (config, { keepalive }) =>
-          saveWithRetry(() =>
-            (keepalive ? rpcKeepalive : rpc).tableConfig.save({ spaceId, config }),
+        save: (config, { keepalive, shouldContinue }) =>
+          saveWithRetry(
+            () => (keepalive ? rpcKeepalive : rpc).tableConfig.save({ spaceId, config }),
+            shouldContinue,
           ),
         reset: () => rpc.tableConfig.reset({ spaceId }),
         notifyError: (message) => void toast.error(message),

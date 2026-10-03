@@ -62,6 +62,14 @@ All earlier findings are fixed. Two small ones remained:
 | Audit F6 (P3-2) | P3 | Another tab kept showing (and saving) the previous session's data after a login or logout | **Fixed.** `session-sync.ts`: `BroadcastChannel('waddlers-auth')`, `storage` event fallback; other tabs halt their savers, clear the cache and reload. Handler and broadcast unit-tested; not covered by E2E (multi-page), not verified in a real browser. The user id is not in the `tableConfig.get` key (not cheap with the oRPC key helper); the clear-and-reload covers it. |
 | Audit F7 (P3-3) | P3 | `sanitizeSearch` could cut a surrogate pair and send a lone surrogate (BAD_REQUEST) | **Fixed.** Cut on a code-point boundary, then `isStorableText` (an unstorable text is ignored). Test with 99 characters plus an emoji. |
 
+### Targeted audit (e2811b1)
+
+| Ref | Finding | Status |
+| --- | --- | --- |
+| Audit F1 | A save that got a 429 could retry after logout (`halt()` only cancelled the debouncer) | **Fixed.** `shouldContinue` from the session is checked after the sleep, before the retry. Tests: `save-policy.test.ts`, `config-session.test.ts` (halt at 1 s of a 3 s wait: exactly 1 call). |
+| Audit I1 | Logout button could be double-clicked | **Fixed.** `disabled={busy}` and `aria-busy`. |
+| Audit I2 | Between a login in tab B and the broadcast reaching tab A, a debounce timer in A could save under the new cookie | **Documented and accepted.** Bounded by server scoping (own row, own spaces); full fix needs a session-bound server check. See FRONTEND.md. |
+
 ## Notes for the next sprints
 
 - S8 flips `filterable` for the valuation, debt and dividend columns, adds the `columnSql` mapping and tests; those values are cell values with their own rounding, so use `wire8Sql` and decide the null/zero semantics per column.

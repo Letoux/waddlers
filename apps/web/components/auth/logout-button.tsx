@@ -41,7 +41,14 @@ export function LogoutButton() {
 
   const busy = logout.isPending || logout.isSuccess;
   return (
-    <Button type="button" variant="outline" size="sm" onClick={() => logout.mutate(undefined)}>
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      disabled={busy}
+      aria-busy={busy}
+      onClick={() => logout.mutate(undefined)}
+    >
       {busy && <Loader2 className="animate-spin" aria-hidden />}
       Se déconnecter
     </Button>

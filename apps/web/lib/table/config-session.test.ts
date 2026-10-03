@@ -5,6 +5,7 @@ import {
   type TableConfigOutput,
   type TableConfigV1,
 } from '@waddlers/contracts';
+import { saveWithRetry } from './save-policy';
 import { TableConfigSession, CONFIG_SAVE_ERROR } from './config-session';
 
 const cfg = (
@@ -164,7 +165,7 @@ describe('TableConfigSession', () => {
     expect(save).toHaveBeenCalledTimes(2);
     expect(save).toHaveBeenLastCalledWith(
       { ...defaultTableConfig(), density: 'comfortable' },
-      { keepalive: false },
+      expect.objectContaining({ keepalive: false }),
     );
   });
 
@@ -185,5 +186,28 @@ describe('TableConfigSession', () => {
     await s.flush();
     await expect(s.reset()).rejects.toThrow('x');
     expect(cache.data.get('A')?.config.density).toBe('compact');
+  });
+
+  it('audit F1: a halt during the 429 wait stops the retry', async () => {
+    const rpc = vi
+      .fn()
+      .mockRejectedValueOnce(new ORPCError('TOO_MANY_REQUESTS', { data: { retryAfterSeconds: 3 } }))
+      .mockResolvedValue({});
+    const notifyError = vi.fn();
+    const s = new TableConfigSession({
+      store: { get: () => out(cfg('comfortable')), set: vi.fn() },
+      save: (config, { shouldContinue }) => saveWithRetry(() => rpc(config), shouldContinue),
+      reset: vi.fn(),
+      notifyError,
+    });
+    s.seed(cfg('comfortable'));
+    s.update(density);
+    await vi.advanceTimersByTimeAsync(500); // debounce: first request, answered 429
+    expect(rpc).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    s.halt(); // logout during the sleep
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(notifyError).not.toHaveBeenCalled();
   });
 });

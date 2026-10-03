@@ -22,7 +22,10 @@ describe('ConfigSaver', () => {
     expect(save).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(save).toHaveBeenCalledTimes(1);
-    expect(save).toHaveBeenCalledWith(cfg('compact'), { keepalive: false });
+    expect(save).toHaveBeenCalledWith(
+      cfg('compact'),
+      expect.objectContaining({ keepalive: false }),
+    );
     expect(onSaved).toHaveBeenCalledWith(cfg('compact'));
   });
 
@@ -41,7 +44,10 @@ describe('ConfigSaver', () => {
     release();
     await vi.advanceTimersByTimeAsync(0);
     expect(save).toHaveBeenCalledTimes(2);
-    expect(save).toHaveBeenLastCalledWith(cfg('compact'), { keepalive: false });
+    expect(save).toHaveBeenLastCalledWith(
+      cfg('compact'),
+      expect.objectContaining({ keepalive: false }),
+    );
   });
 
   it('reports a failure with the config that failed', async () => {
@@ -108,6 +114,6 @@ describe('ConfigSaver', () => {
     const saver = new ConfigSaver({ save, onSaved: vi.fn(), onError: vi.fn() });
     saver.schedule(cfg('compact'));
     await saver.flush({ keepalive: true });
-    expect(save).toHaveBeenCalledWith(cfg('compact'), { keepalive: true });
+    expect(save).toHaveBeenCalledWith(cfg('compact'), expect.objectContaining({ keepalive: true }));
   });
 });

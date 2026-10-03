@@ -43,6 +43,7 @@ export class TableConfigSession {
   constructor(private readonly deps: Deps) {
     this.saver = new ConfigSaver({
       ...(deps.delayMs !== undefined ? { delayMs: deps.delayMs } : {}),
+      shouldContinue: () => !this.halted,
       save: deps.save,
       onSaved: (config) => {
         if (!this.halted) this.confirmed = config;
