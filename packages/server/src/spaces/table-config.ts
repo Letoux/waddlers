@@ -10,7 +10,11 @@ import type { DbExecutor } from '../db/create';
 import { pgErrorCode } from '../db/errors';
 import { tableConfigs } from '../db/schema';
 import type { AuthorizedSpace } from './access';
-import { isNewerTableConfigVersion, migrateTableConfig } from './table-config-migrate';
+import {
+  isNewerTableConfigVersion,
+  migrateTableConfig,
+  withMajorCurrencyFilters,
+} from './table-config-migrate';
 
 /**
  * The caller's own table view of a space (S7, D27). The row key is `(space.userId, space.id)`:
@@ -56,9 +60,10 @@ export async function getTableConfig(
 export async function saveTableConfig(
   db: DbExecutor,
   space: AuthorizedSpace,
-  config: TableConfigV1,
+  input: TableConfigV1,
 ): Promise<TableConfigOutput> {
   const userId = userOf(space);
+  const config = withMajorCurrencyFilters(input); // D28: GBX is stored (and answered) as GBP
   try {
     const [written] = await db
       .insert(tableConfigs)

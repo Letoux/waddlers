@@ -28,9 +28,28 @@ async function reloadTable(page: Page) {
   await expect(rows(page).first()).toBeVisible();
 }
 
-/** The config is saved 500 ms after the last edit: wait for that request before reloading. */
-const configSaved = (page: Page) =>
-  page.waitForResponse((r) => r.url().includes('/tableConfig/save') && r.ok());
+type SavedConfig = {
+  density?: string;
+  filters?: { kind: string; columnId: string; min?: string }[];
+  columns: { id: string; visible: boolean }[];
+};
+const isShown = (c: SavedConfig, id: string) => c.columns.some((x) => x.id === id && x.visible);
+
+/**
+ * The config is saved 500 ms after the last edit: wait for the successful save whose body
+ * (the full config) matches `match`, so an earlier save can never satisfy the wait. Register it
+ * BEFORE the last edit.
+ */
+const configSaved = (page: Page, match: (config: SavedConfig) => boolean) =>
+  page.waitForResponse((r) => {
+    if (!r.url().includes('/tableConfig/save') || !r.ok()) return false;
+    try {
+      const body = r.request().postDataJSON() as { json?: { config?: SavedConfig } };
+      return !!body.json?.config && match(body.json.config);
+    } catch {
+      return false;
+    }
+  });
 
 async function openPanel(page: Page, name: 'Colonnes' | 'Filtres') {
   const button = page.getByRole('button', { name: new RegExp(`^${name}`) });
@@ -94,7 +113,10 @@ test.describe('filtrage (specs 43)', () => {
     await openPanel(page, 'Filtres');
     await page.getByLabel('Minimum Perf. 12 mois').fill(cut);
     await page.getByLabel('Maximum Perf. 12 mois').fill('');
-    const saved = configSaved(page);
+    const saved = configSaved(
+      page,
+      (c) => !!c.filters?.some((f) => f.kind === 'between' && f.min === cut.replace(',', '.')),
+    );
     await page.getByRole('button', { name: 'Appliquer' }).click();
     await expect(count(page)).toHaveText('1 titre');
     await saved;
@@ -160,6 +182,7 @@ test.describe('colonnes et ordre (specs 43, 16)', () => {
 
     await openPanel(page, 'Colonnes');
     await page.getByRole('checkbox', { name: "Secteur d'activité" }).click();
+    const saved = configSaved(page, (c) => !isShown(c, 'sector') && isShown(c, 'price_date'));
     await page.getByRole('checkbox', { name: 'Date du cours' }).click();
     const pending = page.getByRole('checkbox', { name: /Dette nette/ });
     await expect(pending).toBeDisabled();
@@ -170,7 +193,6 @@ test.describe('colonnes et ordre (specs 43, 16)', () => {
       expect(heads.at(-2)?.startsWith('Date du cours')).toBe(true); // before the Actions column
     }).toPass();
 
-    const saved = configSaved(page);
     await page.keyboard.press('Escape');
     await saved;
     await reloadTable(page);
@@ -209,6 +231,10 @@ test.describe('colonnes et ordre (specs 43, 16)', () => {
 
     await openPanel(page, 'Colonnes');
     await page.getByRole('button', { name: 'Monter Cours en EUR' }).focus();
+    const saved = configSaved(
+      page,
+      (c) => c.columns.filter((x) => x.visible)[1]?.id === 'price_eur',
+    );
     await page.keyboard.press('Enter');
     await expect(async () => {
       const heads = await headers(page);
@@ -217,11 +243,33 @@ test.describe('colonnes et ordre (specs 43, 16)', () => {
     }).toPass();
     await expect(page.getByRole('button', { name: 'Monter Société' })).toBeDisabled();
 
-    const saved = configSaved(page);
     await page.keyboard.press('Escape');
     await saved;
     await reloadTable(page);
     expect((await headers(page))[1]).toMatch(/^Cours EUR/);
+  });
+
+  test('move a column down: focus stays on the moved item, falls back at an end, and is announced', async ({
+    page,
+    scenario,
+  }) => {
+    const s = await scenario([{ label: 'A', role: 'owner', positions: [AI, SAP] }]);
+    await s.signIn(page);
+    await openTitres(page);
+    await openPanel(page, 'Colonnes');
+    const status = page.getByTestId('column-move-status');
+
+    await page.getByRole('button', { name: 'Descendre Société' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('button', { name: 'Descendre Société' })).toBeFocused();
+    await expect(status).toHaveText('Société déplacée en position 2');
+    await expect.poll(async () => (await headers(page))[0]).toMatch(/^Code/);
+
+    // "Code" is now first: its "Monter" button is disabled, focus falls back to "Descendre".
+    await page.getByRole('button', { name: 'Monter Société' }).click();
+    await expect(page.getByRole('button', { name: 'Monter Société' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Descendre Société' })).toBeFocused();
+    await expect(status).toHaveText('Société déplacée en position 1');
   });
 
   test('reset goes back to the defaults with a toast', async ({ page, scenario }) => {
@@ -256,8 +304,8 @@ test.describe('persistance (specs 19, 43)', () => {
     await openTitres(page, s.spaces['A']!.id);
     await openPanel(page, 'Colonnes');
     await page.getByRole('checkbox', { name: "Secteur d'activité" }).click();
+    const saved = configSaved(page, (c) => c.density === 'compact' && !isShown(c, 'sector'));
     await page.getByRole('button', { name: 'Compacte' }).click();
-    const saved = configSaved(page);
     await page.keyboard.press('Escape');
     await saved;
 
@@ -275,13 +323,47 @@ test.describe('persistance (specs 19, 43)', () => {
     await expect(page.getByRole('table')).toHaveAttribute('data-density', 'comfortable');
   });
 
+  test('logout right after an edit: no toast on /login and the edit is not lost', async ({
+    page,
+    scenario,
+  }) => {
+    const s = await scenario([{ label: 'A', role: 'owner', positions: [AI, SAP] }]);
+    await s.signIn(page);
+    await openTitres(page);
+    await openPanel(page, 'Colonnes');
+    await page.getByRole('checkbox', { name: "Secteur d'activité" }).click();
+    await page.keyboard.press('Escape');
+    // Well inside the 500 ms debounce: the logout must flush the edit first.
+    await page.getByRole('button', { name: 'Se déconnecter' }).click();
+    await expect(page).toHaveURL(/\/login/);
+    await page.waitForTimeout(1500);
+    await expect(page.locator('.Toastify__toast')).toHaveCount(0);
+
+    await s.signIn(page);
+    await openTitres(page);
+    expect((await headers(page)).some((h) => h.startsWith('Secteur'))).toBe(false);
+  });
+
+  test('logging out in one tab reloads the other tab onto /login', async ({ page, scenario }) => {
+    const s = await scenario([{ label: 'A', role: 'owner', positions: [AI] }]);
+    await s.signIn(page);
+    await openTitres(page);
+    const other = await page.context().newPage();
+    await other.goto(page.url());
+    await expect(rows(other).first()).toBeVisible();
+
+    await page.getByRole('button', { name: 'Se déconnecter' }).click();
+    await expect(page).toHaveURL(/\/login/);
+    await expect(other).toHaveURL(/\/login/);
+  });
+
   test('a viewer can save their own view', async ({ page, scenario }) => {
     const s = await scenario([{ label: 'A', role: 'viewer', positions: [AI, SAP] }]);
     await s.signIn(page);
     await openTitres(page);
     await openPanel(page, 'Colonnes');
+    const saved = configSaved(page, (c) => !isShown(c, 'sector'));
     await page.getByRole('checkbox', { name: "Secteur d'activité" }).click();
-    const saved = configSaved(page);
     await page.keyboard.press('Escape');
     await saved;
     await reloadTable(page);

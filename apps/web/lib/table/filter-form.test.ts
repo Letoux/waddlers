@@ -4,10 +4,19 @@ import {
   buildBetweenFilter,
   chipLabel,
   mergeFacetOptions,
+  BOUND_INVALID,
   parseBound,
   toggleInValue,
   upsertFilter,
 } from './filter-form';
+
+describe('parseBound errors', () => {
+  it('F-F3: every invalid bound gets the filter message, never the quantity one', () => {
+    for (const raw of ['abc', '1,2,3', '-', '--5', '1e5', '12 x', '1 2 3,4,5']) {
+      expect(parseBound(raw)).toEqual({ ok: false, message: BOUND_INVALID });
+    }
+  });
+});
 
 describe('parseBound', () => {
   it('accepts the French comma and the dot', () => {
@@ -135,17 +144,25 @@ describe('mergeFacetOptions', () => {
     { value: 'Santé', label: 'Santé', count: 2 },
     { value: 'Technologie', label: 'Technologie', count: 5 },
   ];
+  const LOADED = { loaded: true, truncated: false };
+  it('does not claim a value is absent while the facets load, failed, or were truncated', () => {
+    const merged = (state: { loaded: boolean; truncated: boolean }) =>
+      mergeFacetOptions('sector', options, ['Énergie'], state).at(-1);
+    expect(merged({ loaded: false, truncated: false })?.count).toBeNull();
+    expect(merged({ loaded: true, truncated: true })?.count).toBeNull();
+    expect(merged({ loaded: true, truncated: false })?.count).toBe(0);
+  });
   it('keeps the facets untouched when every active value is present', () => {
-    expect(mergeFacetOptions('sector', options, ['Santé'])).toEqual(options);
+    expect(mergeFacetOptions('sector', options, ['Santé'], LOADED)).toEqual(options);
   });
   it('appends an active value the facets no longer return, with count 0', () => {
-    expect(mergeFacetOptions('sector', options, ['Santé', 'Énergie'])).toEqual([
+    expect(mergeFacetOptions('sector', options, ['Santé', 'Énergie'], LOADED)).toEqual([
       ...options,
       { value: 'Énergie', label: 'Énergie', count: 0 },
     ]);
   });
   it('labels an absent instrument type in French and works with no facets at all', () => {
-    expect(mergeFacetOptions('instrument_type', [], ['etf'])).toEqual([
+    expect(mergeFacetOptions('instrument_type', [], ['etf'], LOADED)).toEqual([
       { value: 'etf', label: 'ETF', count: 0 },
     ]);
   });

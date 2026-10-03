@@ -83,6 +83,23 @@ describe('get, save, reset', () => {
     expect(await get(pea, aliceCookie)).toEqual({ config: cfg, isDefault: false });
   });
 
+  it('F-B1: a GBX currency filter is stored as GBP and the response equals the stored document', async () => {
+    const cfg = config('symbol', {
+      filters: [{ kind: 'in', columnId: 'currency', values: ['GBX', 'EUR'] }],
+    });
+    const major = {
+      ...cfg,
+      filters: [{ kind: 'in', columnId: 'currency', values: ['GBP', 'EUR'] }],
+    };
+    const saved = await save(pea, cfg, aliceCookie);
+    expect(saved.json).toEqual({ config: major, isDefault: false });
+    const [row] = await getDb().select().from(tableConfigs);
+    expect((row?.config as TableConfigV1).filters).toEqual(major.filters);
+    expect(await get(pea, aliceCookie)).toEqual({ config: major, isDefault: false });
+    // Saving the same GBX document again is the identical stored document: still answered as GBP.
+    expect((await save(pea, cfg, aliceCookie)).json).toEqual({ config: major, isDefault: false });
+  });
+
   it('saving again replaces the config (upsert, repeatable)', async () => {
     await save(pea, config('symbol'), aliceCookie);
     await save(pea, config('symbol'), aliceCookie);

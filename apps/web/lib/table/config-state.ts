@@ -61,7 +61,8 @@ export const isSelectable = (id: TableColumnId) =>
 
 /**
  * Shows (at the end) or hides one column. Refused (same object returned) when it would leave no visible column
- * or when the column is pending. Hiding a column keeps its place in the order.
+ * or when the column is pending. Hiding a column keeps its place in the order and drops the sort
+ * when it was the sort column.
  */
 export function toggleColumn(
   config: TableConfigV1,
@@ -76,11 +77,17 @@ export function toggleColumn(
   if (visible) {
     return { ...config, columns: [...config.columns.filter((c) => c.id !== id), { id, visible }] };
   }
-  return {
+  // A hidden column cannot stay the sort key (review F-F6): the sort goes with it.
+  const hidden = {
     ...config,
     columns: config.columns.map((c) => (c.id === id ? { ...c, visible } : c)),
   };
+  return config.sort?.columnId === id ? withSort(hidden, null) : hidden;
 }
+
+/** Is `sort` on a column that `config` no longer shows? (then the sort must go, config and URL) */
+export const isSortHidden = (config: TableConfigV1, sort: TableSort | null): boolean =>
+  sort !== null && !visibleColumnIds(config).includes(sort.columnId);
 
 /**
  * Moves a column one step among the VISIBLE columns (the order the user sees); hidden columns

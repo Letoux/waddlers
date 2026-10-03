@@ -5,6 +5,7 @@ import {
   configDensity,
   configPageSize,
   effectiveSort,
+  isSortHidden,
   moveColumn,
   toggleColumn,
   visibleColumnIds,
@@ -78,6 +79,23 @@ describe('toggleColumn', () => {
   it('is a no-op for the same visibility', () => {
     const config = base();
     expect(toggleColumn(config, 'name', true)).toBe(config);
+  });
+});
+
+describe('hiding the sorted column (F-F6)', () => {
+  it('drops the saved sort with it, keeps the sort of another column', () => {
+    const sorted = withSort(base(), { columnId: 'name', direction: 'asc' });
+    expect(toggleColumn(sorted, 'name', false).sort).toBeUndefined();
+    expect(toggleColumn(sorted, 'sector', false).sort).toEqual({
+      columnId: 'name',
+      direction: 'asc',
+    });
+  });
+  it('isSortHidden also catches a `?tri=` sort on a hidden column', () => {
+    const config = toggleColumn(base(), 'sector', false);
+    expect(isSortHidden(config, { columnId: 'sector', direction: 'desc' })).toBe(true);
+    expect(isSortHidden(config, { columnId: 'name', direction: 'desc' })).toBe(false);
+    expect(isSortHidden(config, null)).toBe(false);
   });
 });
 

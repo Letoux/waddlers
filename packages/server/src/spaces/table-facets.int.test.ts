@@ -62,7 +62,7 @@ describe('facets and filters agree (D28)', () => {
     expect((await facets()).currency).toEqual([
       { value: 'GBP', label: 'GBP (cotations en pence incluses)', count: 3 },
       { value: 'USD', label: 'USD', count: 1 },
-      { value: 'ZAR', label: 'ZAR (cotations en pence incluses)', count: 1 },
+      { value: 'ZAR', label: 'ZAR (cotations en cents incluses)', count: 1 },
     ]);
   });
 

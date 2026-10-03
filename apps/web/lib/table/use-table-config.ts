@@ -1,15 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
+import { ORPCError } from '@orpc/client';
 import type { TableConfigOutput, TableConfigV1 } from '@waddlers/contracts';
-import { orpc } from '@/lib/orpc';
-import { spaceFailureKind } from '@/lib/spaces/errors';
-import { ConfigSaver } from './config-saver';
-import { CONFIG_CONFLICT_MESSAGE, isConfigConflict, saveWithRetry } from './save-policy';
+import { orpc, rpc, rpcKeepalive } from '@/lib/orpc';
+import { TableConfigSession } from './config-session';
+import { registerSaveEntry } from './save-registry';
+import { saveWithRetry } from './save-policy';
 
-export const CONFIG_SAVE_ERROR = 'Impossible d’enregistrer la configuration. Elle a été restaurée.';
 export const CONFIG_RESET_OK = 'Configuration réinitialisée.';
 export const CONFIG_RESET_ERROR = 'Impossible de réinitialiser la configuration.';
 
@@ -17,7 +17,9 @@ export const CONFIG_RESET_ERROR = 'Impossible de réinitialiser la configuration
  * The user's own table view of a space (specs 16, 19, D27). `tableConfig.get` is read once per
  * session (only this client writes it; the cache is cleared at logout). An edit updates the cache
  * at once (optimistic), the FULL config is saved 500 ms after the last edit, one request at a time.
- * A failed save toasts and restores the last config the server confirmed.
+ * A failed save toasts and restores the last config the server confirmed FOR THIS SPACE: the
+ * session (and its `confirmed` config) is rebuilt when `spaceId` changes. The logic lives in
+ * `TableConfigSession`; this hook only wires it to React Query.
  */
 export function useTableConfig(spaceId: string, initial?: TableConfigOutput) {
   const queryClient = useQueryClient();
@@ -33,65 +35,51 @@ export function useTableConfig(spaceId: string, initial?: TableConfigOutput) {
     }),
   );
 
-  const confirmed = useRef<TableConfigV1 | null>(null);
-  if (confirmed.current === null && query.data) confirmed.current = query.data.config;
-
-  const saver = useMemo(
+  const session = useMemo(
     () =>
-      new ConfigSaver({
-        save: (config) => saveWithRetry(() => orpc.tableConfig.save.call({ spaceId, config })),
-        onSaved: (config) => {
-          confirmed.current = config;
+      new TableConfigSession({
+        store: {
+          get: () => queryClient.getQueryData<TableConfigOutput>(queryKey),
+          set: (value) => queryClient.setQueryData<TableConfigOutput>(queryKey, value),
         },
-        onError: (error, _config, hasNewer) => {
-          if (isConfigConflict(error)) toast.error(CONFIG_CONFLICT_MESSAGE);
-          else if (spaceFailureKind(error) !== 'not_found') toast.error(CONFIG_SAVE_ERROR);
-          if (hasNewer || !confirmed.current) return;
-          queryClient.setQueryData<TableConfigOutput>(queryKey, {
-            config: confirmed.current,
-            isDefault: false,
-          });
-        },
+        save: (config, { keepalive }) =>
+          saveWithRetry(() =>
+            (keepalive ? rpcKeepalive : rpc).tableConfig.save({ spaceId, config }),
+          ),
+        reset: () => rpc.tableConfig.reset({ spaceId }),
+        notifyError: (message) => void toast.error(message),
       }),
     [spaceId, queryClient, queryKey],
   );
+  if (query.data) session.seed(query.data.config);
 
-  // Leaving the page (or the space) must not lose the last edit.
+  // Leaving the page (or the space) must not lose the last edit; logout flushes through the registry.
   useEffect(() => {
-    const flush = () => void saver.flush();
-    window.addEventListener('pagehide', flush);
+    const flush = () => void session.flush();
+    const onHide = () => void session.flush({ keepalive: true });
+    window.addEventListener('pagehide', onHide);
+    const unregister = registerSaveEntry({
+      flush: () => session.flush(),
+      halt: () => session.halt(),
+    });
     return () => {
-      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('pagehide', onHide);
+      unregister();
       flush();
     };
-  }, [saver]);
+  }, [session]);
 
   const update = useCallback(
-    (edit: (config: TableConfigV1) => TableConfigV1) => {
-      const current = queryClient.getQueryData<TableConfigOutput>(queryKey);
-      if (!current) return;
-      const next = edit(current.config);
-      if (next === current.config) return;
-      queryClient.setQueryData<TableConfigOutput>(queryKey, { config: next, isDefault: false });
-      saver.schedule(next);
-    },
-    [queryClient, queryKey, saver],
+    (edit: (config: TableConfigV1) => TableConfigV1) => session.update(edit),
+    [session],
   );
 
   const reset = useMutation({
-    mutationFn: () => {
-      saver.cancel(); // the reset supersedes an edit still waiting for its save
-      return orpc.tableConfig.reset.call({ spaceId });
-    },
-    onSuccess: (output) => {
-      confirmed.current = output.config;
-      // An edit made while the reset was in flight is newer: keep it (last write wins).
-      if (!saver.hasPending()) queryClient.setQueryData<TableConfigOutput>(queryKey, output);
-      toast.success(CONFIG_RESET_OK);
-    },
-    onError: () => {
+    mutationFn: () => session.reset(),
+    onSuccess: () => void toast.success(CONFIG_RESET_OK),
+    onError: (error) => {
+      if (error instanceof ORPCError && error.code === 'UNAUTHORIZED') return;
       toast.error(CONFIG_RESET_ERROR);
-      void queryClient.invalidateQueries({ queryKey });
     },
   });
 

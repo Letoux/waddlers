@@ -28,6 +28,40 @@ Independent code review and security audit of commit fed0a54 (S7 backend: filter
 | Audit F3 | - | The IDOR matrix lacked a user who belongs to two spaces | **Fixed.** `idor-matrix.int.test.ts`: a member of A and B saves in A, then `get(B).isDefault === true`, a reset in B leaves A's view, and the only row is keyed to A. Mutation M3 (dropping `space_id` from the `get` predicate) was applied: the new test fails (`expected false to be true`), the existing matrix did not catch it; the mutation was reverted. |
 | Audit F4 | - | Filter currency values and facet values disagreed (raw versus major) | **Fixed with Review P2-1 / P2-2 (D28).** |
 
+## Re-review / frontend review / audit (e60de8d)
+
+Second pass after the S7 frontend commit (e60de8d). As above, the original texts are not reproduced; refs are the ones handed to the fix pass. The fix pass is uncommitted.
+
+### Backend re-review
+
+All earlier findings are fixed. Two small ones remained:
+
+| Ref | Finding | Status |
+| --- | --- | --- |
+| Review F-B1 | `save` answered the document as sent (`GBX`) while `get` rewrote it to `GBP` on read, so the client cache differed from the stored row | **Fixed.** The save path applies the same D28 rewrite (`withMajorCurrencyFilters`): the row stores `GBP`, the response is the stored document. Tests: `table-config-migrate.test.ts`, `table-config.int.test.ts`. |
+| Review F-B2 | The currency facet label said "pence" for ZAR too | **Fixed.** `GBP (cotations en pence incluses)`, `ZAR (cotations en cents incluses)`. Test: `table-facets.int.test.ts`. |
+
+### Frontend review
+
+| Ref | Finding | Status |
+| --- | --- | --- |
+| Review F-F1 | `confirmed` was shared across spaces: a failed save in B could restore A's config | **Fixed.** `TableConfigSession` per `spaceId` (instance field), `<PositionsTable key={spaceId}>`. `config-session.test.ts` simulates the switch on one shared cache (no DOM test environment in the repo, so the hook is not rendered; the hook only builds the session in `useMemo([spaceId])`). |
+| Review F-F2 | A reset could race the save in flight and drop or keep the wrong edits | **Fixed.** Reset cancels the waiting edit, holds the saver, awaits the save in flight, resets, then replays only the edits made after the click (generation counter). Fake-timer test in `config-session.test.ts`; `hold`/`idle` tests in `config-saver.test.ts`. |
+| Review F-F3 | An invalid filter bound could show the quantity message | **Fixed.** `parseBound` always answers `BOUND_INVALID`. Test in `filter-form.test.ts`. |
+| Review F-F4 | A merged active value was labelled "(absent)" even while the facets loaded, failed or were truncated; checkbox ids embedded free text | **Fixed.** `mergeFacetOptions(..., { loaded, truncated })`: count `0` ("absent") only when loaded and not truncated, otherwise no count; ids are `useId()` plus the index. Unit tests. |
+| Review F-F5 | Keyboard reorder lost focus (the button became disabled) and nothing was announced | **Fixed.** Focus returns to the moved item's button (the other one at an end of the list); `aria-live` "X déplacée en position n". E2E "move a column down". |
+| Review F-F6 | Hiding the sorted column kept the sort (config and `?tri=`) | **Fixed.** `toggleColumn` drops the saved sort; the view clears `?tri=` (`isSortHidden`). Unit tests. |
+| Review F-F7 | E2E waits for a save could be satisfied by an earlier save (flaky) | **Fixed.** `configSaved(page, match)` matches the request body (full config) and is registered before the last edit. Spec run with `--repeat-each=3`. |
+| Review F-F8 | The `pagehide` flush could be cancelled by the browser | **Fixed.** That flush uses a `keepalive: true` client (`rpcKeepalive`); a save already in flight is awaited, not duplicated. Unit test of the flag. Still best effort (64 KB limit, not verifiable in E2E). |
+
+### Security audit
+
+| Ref | Sev | Finding | Status |
+| --- | --- | --- | --- |
+| Audit F5 (P3-1) | P3 | Logout with an unsaved edit: the save left after the session ended (UNAUTHORIZED toast on /login, edit lost) | **Fixed.** The logout mutation awaits `flushPendingSaves()` (registry, bounded at 1 s) BEFORE `auth.logout`, then `haltPendingSaves()`; an UNAUTHORIZED save error never toasts nor writes the cache. Unit tests (`save-registry`, `config-session`) and E2E "logout right after an edit". |
+| Audit F6 (P3-2) | P3 | Another tab kept showing (and saving) the previous session's data after a login or logout | **Fixed.** `session-sync.ts`: `BroadcastChannel('waddlers-auth')`, `storage` event fallback; other tabs halt their savers, clear the cache and reload. Handler and broadcast unit-tested; not covered by E2E (multi-page), not verified in a real browser. The user id is not in the `tableConfig.get` key (not cheap with the oRPC key helper); the clear-and-reload covers it. |
+| Audit F7 (P3-3) | P3 | `sanitizeSearch` could cut a surrogate pair and send a lone surrogate (BAD_REQUEST) | **Fixed.** Cut on a code-point boundary, then `isStorableText` (an unstorable text is ignored). Test with 99 characters plus an emoji. |
+
 ## Notes for the next sprints
 
 - S8 flips `filterable` for the valuation, debt and dividend columns, adds the `columnSql` mapping and tests; those values are cell values with their own rounding, so use `wire8Sql` and decide the null/zero semantics per column.

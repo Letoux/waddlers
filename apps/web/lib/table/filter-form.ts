@@ -33,7 +33,7 @@ export function parseBound(raw: string): BoundResult {
   if (text === '') return { ok: true, value: null };
   const negative = text.startsWith('-');
   const magnitude = parseQuantityInput(negative ? text.slice(1).trimStart() : text);
-  if (!magnitude.ok) return { ok: false, message: magnitude.message };
+  if (!magnitude.ok) return { ok: false, message: BOUND_INVALID };
   if (magnitude.value === null) return { ok: false, message: BOUND_INVALID };
   const signed =
     negative && /[1-9]/.test(magnitude.value) ? `-${magnitude.value}` : magnitude.value;
@@ -137,23 +137,26 @@ export function filterColumnName(columnId: string, period: DashboardPeriod): str
     : columnHeader(def, period);
 }
 
-/** Facet option of an active `in` value that the facets no longer return (count 0 = absent). */
-export type FacetOption = FacetValue;
+/** A choice of an `in` filter; `count` is `null` when it is not known (see `mergeFacetOptions`). */
+export type FacetOption = { value: string; label: string; count: number | null };
 
 /**
- * Choices of an `in` filter: the facets, plus every ACTIVE value the facets do not return any more
- * (position removed, renamed, 200 cap) with count 0, so it stays visible, checked, and can be
- * unticked.
+ * Choices of an `in` filter: the facets, plus every ACTIVE value the facets do not return, so it
+ * stays visible, checked, and can be unticked. Such a value is "absent" (count 0) only when the
+ * facets are loaded AND the list is complete: while they load, after an error, or when the list was
+ * cut at the cap, we do not know, so it is shown without a count (never claimed absent).
  */
 export function mergeFacetOptions(
   columnId: InFilterColumnId,
   options: readonly FacetValue[],
   activeValues: readonly string[],
+  state: { loaded: boolean; truncated: boolean },
 ): FacetOption[] {
   const known = new Set(options.map((o) => o.value));
+  const count = state.loaded && !state.truncated ? 0 : null;
   const missing = activeValues
     .filter((v) => !known.has(v))
-    .map((value) => ({ value, label: inValueLabel(columnId, value, undefined), count: 0 }));
+    .map((value) => ({ value, label: inValueLabel(columnId, value, undefined), count }));
   return [...options, ...missing];
 }
 

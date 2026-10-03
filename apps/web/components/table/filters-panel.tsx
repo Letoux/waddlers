@@ -1,5 +1,6 @@
 'use client';
 
+import { useId } from 'react';
 import {
   IN_FILTER_COLUMN_IDS,
   TABLE_COLUMNS_BY_ID,
@@ -23,6 +24,11 @@ type FacetsState = {
   refetch: () => void;
 };
 
+function countAriaLabel(count: number): string {
+  if (count === 0) return 'absent de l’espace';
+  return `${count} titre${count > 1 ? 's' : ''} dans l’espace`;
+}
+
 function InSection({
   columnId,
   filters,
@@ -37,7 +43,14 @@ function InSection({
   const def = TABLE_COLUMNS_BY_ID.get(columnId);
   const current = filters.find((f): f is InFilter => f.kind === 'in' && f.columnId === columnId);
   // Active values stay listed (checked, 'absent') even when the facets no longer return them.
-  const options = mergeFacetOptions(columnId, facets.data?.[columnId] ?? [], current?.values ?? []);
+  const options = mergeFacetOptions(
+    columnId,
+    facets.data?.[columnId] ?? [],
+    current?.values ?? [],
+    { loaded: !!facets.data, truncated: facets.data?.truncated[columnId] ?? false },
+  );
+  // Values are free text (sector names...): the DOM id never embeds them.
+  const idBase = useId();
   return (
     <div role="group" aria-labelledby={`in-${columnId}`} className="grid gap-1.5">
       <p id={`in-${columnId}`} className="mb-1 text-sm font-medium">
@@ -66,8 +79,8 @@ function InSection({
         <p className="text-xs text-muted-foreground">Aucune valeur dans cet espace.</p>
       )}
       <div className="grid max-h-40 gap-1.5 overflow-y-auto">
-        {options.map((option) => {
-          const id = `filter-${columnId}-${option.value}`;
+        {options.map((option, index) => {
+          const id = `${idBase}-${index}`;
           return (
             <div key={option.value} className="flex items-center gap-2">
               <Checkbox
@@ -79,16 +92,14 @@ function InSection({
               />
               <Label htmlFor={id} className="flex-1 text-sm font-normal">
                 {option.label}
-                <span
-                  className="ml-1 text-xs text-muted-foreground"
-                  aria-label={
-                    option.count === 0
-                      ? 'absent de l’espace'
-                      : `${option.count} titre${option.count > 1 ? 's' : ''} dans l’espace`
-                  }
-                >
-                  {option.count === 0 ? '(absent)' : `(${option.count})`}
-                </span>
+                {option.count !== null && (
+                  <span
+                    className="ml-1 text-xs text-muted-foreground"
+                    aria-label={countAriaLabel(option.count)}
+                  >
+                    {option.count === 0 ? '(absent)' : `(${option.count})`}
+                  </span>
+                )}
               </Label>
             </div>
           );

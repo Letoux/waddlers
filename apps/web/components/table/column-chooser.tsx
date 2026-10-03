@@ -1,7 +1,13 @@
 'use client';
 
+import { useEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp } from 'lucide-react';
-import { COLUMN_GROUPS, TABLE_COLUMNS_BY_ID, type TableConfigV1 } from '@waddlers/contracts';
+import {
+  COLUMN_GROUPS,
+  TABLE_COLUMNS_BY_ID,
+  type TableColumnId,
+  type TableConfigV1,
+} from '@waddlers/contracts';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
@@ -24,6 +30,30 @@ export function ColumnChooser({
 }) {
   const shown = visibleColumnIds(config);
   const onlyOne = shown.length <= 1;
+  const buttons = useRef(new Map<string, HTMLButtonElement | null>());
+  const [moved, setMoved] = useState<{ id: TableColumnId; direction: -1 | 1; to: number } | null>(
+    null,
+  );
+  const [announcement, setAnnouncement] = useState('');
+
+  // A disabled button loses focus: after a move, focus goes back to the moved item's button in the
+  // same direction, or to the other one when the item reached an end of the list (review F-F5).
+  useEffect(() => {
+    if (!moved) return;
+    const index = shown.indexOf(moved.id);
+    if (index !== moved.to) return; // the config update has not reached this render yet
+    const atEnd = moved.direction === -1 ? index === 0 : index === shown.length - 1;
+    const useUp = (moved.direction === -1) !== atEnd;
+    buttons.current.get(`${moved.id}:${useUp ? 'up' : 'down'}`)?.focus();
+    setMoved(null);
+  }, [moved, shown]);
+
+  const move = (id: TableColumnId, direction: -1 | 1) => {
+    const position = visibleColumnIds(moveColumn(config, id, direction)).indexOf(id) + 1;
+    setAnnouncement(`${labelOf(id)} déplacée en position ${position}`);
+    setMoved({ id, direction, to: position - 1 });
+    onChange((c) => moveColumn(c, id, direction));
+  };
   return (
     <ResponsivePanel
       label="Colonnes"
@@ -36,6 +66,9 @@ export function ColumnChooser({
           <h3 id="col-order" className="mb-2 text-sm font-medium">
             Ordre d’affichage
           </h3>
+          <p role="status" aria-live="polite" className="sr-only" data-testid="column-move-status">
+            {announcement}
+          </p>
           <ol className="grid gap-1" data-testid="column-order">
             {shown.map((id, index) => (
               <li key={id} className="flex items-center justify-between gap-2 text-sm">
@@ -46,9 +79,10 @@ export function ColumnChooser({
                     variant="ghost"
                     size="icon"
                     className="size-8"
+                    ref={(el) => void buttons.current.set(`${id}:up`, el)}
                     aria-label={`Monter ${labelOf(id)}`}
                     disabled={index === 0}
-                    onClick={() => onChange((c) => moveColumn(c, id, -1))}
+                    onClick={() => move(id, -1)}
                   >
                     <ArrowUp aria-hidden />
                   </Button>
@@ -57,9 +91,10 @@ export function ColumnChooser({
                     variant="ghost"
                     size="icon"
                     className="size-8"
+                    ref={(el) => void buttons.current.set(`${id}:down`, el)}
                     aria-label={`Descendre ${labelOf(id)}`}
                     disabled={index === shown.length - 1}
-                    onClick={() => onChange((c) => moveColumn(c, id, 1))}
+                    onClick={() => move(id, 1)}
                   >
                     <ArrowDown aria-hidden />
                   </Button>

@@ -17,8 +17,12 @@ import { majorCurrencyOf } from './table-fx';
  * lists describe the same snapshot. PostgreSQL only, no provider, no cache (cheap, indexed by space).
  */
 
-/** Appended to a currency label when minor-unit listings (GBX, GBp, ZAc) are grouped under it. */
-const MINOR_LABEL_SUFFIX = ' (cotations en pence incluses)';
+/**
+ * Appended to a currency label when minor-unit listings are grouped under it: pence for GBP (GBX,
+ * GBp), cents for ZAR (ZAc) (review F-B2).
+ */
+const PENCE_SUFFIX = ' (cotations en pence incluses)';
+const CENTS_SUFFIX = ' (cotations en cents incluses)';
 
 type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
 
@@ -62,7 +66,7 @@ async function currencyFacet(
   return tx
     .select({
       value: sql<string>`${major}`,
-      label: sql<string>`case when bool_or(${listings.currency} <> ${major}) then ${major} || ${MINOR_LABEL_SUFFIX} else ${major} end`,
+      label: sql<string>`case when bool_or(${listings.currency} <> ${major}) then ${major} || case when ${major} = 'ZAR' then ${CENTS_SUFFIX}::text else ${PENCE_SUFFIX}::text end else ${major} end`,
       count: sql<number>`count(*)::int`,
     })
     .from(spacePositions)

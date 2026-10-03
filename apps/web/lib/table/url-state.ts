@@ -1,4 +1,9 @@
-import { POSITIONS_SEARCH_MAX, tableSortSchema, type TableSort } from '@waddlers/contracts';
+import {
+  POSITIONS_SEARCH_MAX,
+  isStorableText,
+  tableSortSchema,
+  type TableSort,
+} from '@waddlers/contracts';
 
 /**
  * Table state kept in the URL (specs 20, 22): `?q=` search, `?tri=<column>:<asc|desc>` sort,
@@ -35,9 +40,16 @@ export function parsePageParam(raw: string | null | undefined): number {
   return Math.min(Number(raw), MAX_PAGE);
 }
 
-/** Search text from the URL: NUL removed (refused by the API), cut at the maximum length. */
+/**
+ * Search text from the URL: NUL removed (refused by the API), cut at the maximum length WITHOUT
+ * splitting a surrogate pair (a lone high surrogate at the cut is dropped: the API refuses it), and
+ * ignored altogether when it is still not storable (audit P3-3).
+ */
 export function sanitizeSearch(raw: string | null | undefined): string {
-  return (raw ?? '').replaceAll('\u0000', '').slice(0, POSITIONS_SEARCH_MAX);
+  let text = (raw ?? '').replaceAll('\u0000', '').slice(0, POSITIONS_SEARCH_MAX);
+  const last = text.charCodeAt(text.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) text = text.slice(0, -1);
+  return isStorableText(text) ? text : '';
 }
 
 export function parseTableUrlState(params: Params): TableUrlState {

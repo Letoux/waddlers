@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { POSITIONS_SEARCH_MAX, isStorableText } from '@waddlers/contracts';
 import {
   applyTableUrlPatch,
   nextSort,
@@ -6,6 +7,7 @@ import {
   parsePageParam,
   parseSortParam,
   parseTableUrlState,
+  sanitizeSearch,
   searchForApi,
 } from './url-state';
 
@@ -68,6 +70,21 @@ describe('parseTableUrlState', () => {
     const q = parseTableUrlState(params(`q=${'a'.repeat(300)}`)).q;
     expect(q).toHaveLength(100);
     expect(parseTableUrlState(params('q=a%00b')).q).toBe('ab');
+  });
+});
+
+describe('sanitizeSearch', () => {
+  it('cuts on a code-point boundary: 99 characters + an emoji keeps no lone surrogate', () => {
+    const out = sanitizeSearch(`${'a'.repeat(POSITIONS_SEARCH_MAX - 1)}😀`);
+    expect(out).toBe('a'.repeat(POSITIONS_SEARCH_MAX - 1));
+    expect(isStorableText(out)).toBe(true);
+  });
+
+  it('keeps a whole emoji that fits, strips NUL, ignores a text with a lone surrogate', () => {
+    expect(sanitizeSearch('a😀')).toBe('a😀');
+    expect(sanitizeSearch('a\u0000b')).toBe('ab');
+    expect(sanitizeSearch('a\uD800b')).toBe('');
+    expect(sanitizeSearch(null)).toBe('');
   });
 });
 

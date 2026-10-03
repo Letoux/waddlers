@@ -7,7 +7,11 @@ import {
   tableConfigV1Schema,
 } from '@waddlers/contracts';
 import { describe, expect, it } from 'vitest';
-import { isNewerTableConfigVersion, migrateTableConfig } from './table-config-migrate';
+import {
+  isNewerTableConfigVersion,
+  migrateTableConfig,
+  withMajorCurrencyFilters,
+} from './table-config-migrate';
 
 const SPACE = '11111111-1111-4111-8111-111111111111';
 const visibleIds = (c: ReturnType<typeof migrateTableConfig>) =>
@@ -184,6 +188,22 @@ describe('D28 currency filters in a stored config', () => {
       filters: [{ kind: 'in', columnId: 'currency', values: ['GBX', 'GBP', 'EUR'] }],
     });
     expect(out.filters).toEqual([{ kind: 'in', columnId: 'currency', values: ['GBP', 'EUR'] }]);
+  });
+});
+
+describe('D28 on the save path (F-B1)', () => {
+  it('a GBX currency filter is stored as GBP, de-duplicated; other configs are returned as is', () => {
+    const config = {
+      ...defaultTableConfig(),
+      filters: [
+        { kind: 'in' as const, columnId: 'currency' as const, values: ['GBX', 'GBP', 'ZAc'] },
+      ],
+    };
+    expect(withMajorCurrencyFilters(config).filters).toEqual([
+      { kind: 'in', columnId: 'currency', values: ['GBP', 'ZAR'] },
+    ]);
+    const plain = defaultTableConfig();
+    expect(withMajorCurrencyFilters(plain)).toBe(plain);
   });
 });
 

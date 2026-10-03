@@ -30,6 +30,7 @@ export default async function SpacePositionsPage({
         <p className="text-sm text-muted-foreground">Espace {space.name}</p>
       </div>
       <PositionsTable
+        key={space.id}
         spaceId={space.id}
         canEdit={canEdit}
         {...(initialConfig ? { initialConfig } : {})}

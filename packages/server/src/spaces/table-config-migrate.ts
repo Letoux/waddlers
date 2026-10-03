@@ -60,6 +60,15 @@ function toMajorCurrencies(filter: Filter): Filter {
   return { ...filter, values: [...new Set(values)] };
 }
 
+/**
+ * Save path of D28 (review F-B1): the stored document already says `GBP`, so what `save` answers is
+ * what is stored and what `get` returns, and the UI's cache never differs from the row.
+ */
+export function withMajorCurrencyFilters(config: TableConfigV1): TableConfigV1 {
+  if (!config.filters?.some((f) => f.kind === 'in' && f.columnId === 'currency')) return config;
+  return { ...config, filters: config.filters.map(toMajorCurrencies) };
+}
+
 function migrateFilters(raw: unknown): Filter[] {
   const out: Filter[] = [];
   const seen = new Set<string>();

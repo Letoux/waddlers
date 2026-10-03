@@ -20,6 +20,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { loginFailure } from '@/lib/auth/errors';
 import { orpc } from '@/lib/orpc';
+import { broadcastSessionChange } from '@/lib/auth/session-sync';
 import { frenchIssueMessage } from '@/lib/zod-fr';
 
 /** `next` is already validated server-side (safeNextPath); it is a same-origin path. */
@@ -38,6 +39,7 @@ export function LoginForm({ next }: { next: string }) {
       onSuccess: () => {
         // Nothing cached before login may leak into the new session.
         queryClient.clear();
+        broadcastSessionChange('login');
         router.replace(next);
         router.refresh();
       },

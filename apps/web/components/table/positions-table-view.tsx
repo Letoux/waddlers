@@ -13,6 +13,7 @@ import {
   configFilters,
   configPageSize,
   effectiveSort,
+  isSortHidden,
   visibleColumnIds,
   withDensity,
   withFilters,
@@ -92,6 +93,11 @@ export function PositionsTableView({ spaceId, canEdit, config, update, reset, re
   const onPageSize = (size: PageSize) => {
     update((c) => withPageSize(c, size));
     setUrl({ page: 1 });
+  };
+  // Hiding the sorted column drops the sort, in the config (toggleColumn) and in a shared `?tri=`.
+  const onColumns = (edit: (config: TableConfigV1) => TableConfigV1) => {
+    update(edit);
+    if (isSortHidden(edit(config), sort)) setUrl({ sort: null });
   };
   const onDensity = (next: Density) => update((c) => withDensity(c, next));
   const onReset = () => {
@@ -220,7 +226,7 @@ export function PositionsTableView({ spaceId, canEdit, config, update, reset, re
             <>
               <ColumnChooser
                 config={config}
-                onChange={update}
+                onChange={onColumns}
                 onReset={onReset}
                 resetting={resetting}
               />
