@@ -3,9 +3,20 @@ export const E2E_DATABASE_URL =
   process.env['E2E_DATABASE_URL'] ??
   'postgres://waddlers:waddlers-test@localhost:5433/waddlers_test';
 
-export const E2E_PORT = 3100;
+/** Overridable so two worktrees can run their E2E suites side by side (distinct ports and DBs). */
+const portFromEnv = (name: string, fallback: number) => {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    throw new Error(`${name} must be an integer port between 1024 and 65535`);
+  }
+  return port;
+};
+
+export const E2E_PORT = portFromEnv('E2E_PORT', 3100);
 /** Second server wired to an unreachable database (error-boundary scenario). */
-export const E2E_DB_DOWN_PORT = 3101;
+export const E2E_DB_DOWN_PORT = portFromEnv('E2E_DB_DOWN_PORT', 3101);
 export const E2E_DB_DOWN_URL = 'postgres://nobody:nopass@127.0.0.1:1/none';
 
 /** Test-only secret (>= 32 bytes) for the signed device cookie. Not a real secret. */
